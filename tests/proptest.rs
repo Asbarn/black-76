@@ -93,18 +93,10 @@ proptest! {
     /// vega-weak regions several IVs can map to nearly the same price, so
     /// the IV residual can be larger than you'd expect even when the price
     /// residual is below tolerance.
-    ///
-    /// Scope is restricted to ATM and OTM calls (`m ≥ 1.0`). The ITM regime
-    /// has a v0.1-known limitation: `solve_iv` compares the market price
-    /// against the *undiscounted* intrinsic `F − K`, but the true Black-76
-    /// no-arbitrage lower bound is the *discounted* intrinsic
-    /// `exp(−rT) · (F − K)`. ITM call prices that legitimately lie between
-    /// the two get rejected as "negative time value". See the "Known
-    /// limitations" section of `CHANGELOG.md` for v0.1.0.
     #[test]
     fn prop_iv_roundtrip_call(
         f in forward(),
-        m in 1.0_f64..1.15_f64,
+        m in 0.85_f64..1.15_f64,
         t in 0.10_f64..2.0_f64,
         s in 0.10_f64..1.0_f64,
         r in -0.02_f64..0.10_f64,
@@ -112,9 +104,11 @@ proptest! {
         let k = f * m;
         let market = call_price(f, k, t, s, r);
 
-        // Skip vanishing-time-value cases (`market` ≈ 0) where vega → 0
-        // and the inverse is numerically ill-defined.
-        prop_assume!(market > 0.01 * f);
+        // Skip vanishing-time-value cases (`market` − discounted intrinsic
+        // ≈ 0, where vega → 0 and the inverse is numerically ill-defined).
+        let df = (-r * t).exp();
+        let discounted_intrinsic = df * (f - k).max(0.0);
+        prop_assume!(market - discounted_intrinsic > 0.01 * f);
 
         let cfg = SolverConfig::default();
         let result = solve_iv(market, f, k, t, r, true, &cfg);

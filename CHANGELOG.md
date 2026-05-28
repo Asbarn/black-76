@@ -51,18 +51,19 @@ extraction (see below).
   `df = exp(−rT)` in `call_spread_probability`. Regression:
   `digital::tests::call_spread_with_nonzero_rate`.
 
-### Known limitations (v0.1.0)
+### Fixed (discovered during proptest hardening)
 
-- **`solve_iv` and undiscounted intrinsic** — the "negative time value"
-  gate at the top of `solve_iv` compares the market price against the
-  *undiscounted* intrinsic `F − K`, but the true Black-76 no-arbitrage
-  lower bound is the *discounted* intrinsic `exp(−rT) · (F − K)`. ITM
-  call (or symmetrically, ITM put) prices that legitimately lie between
-  the two get rejected with `iv = iv_min, converged = false` even though
-  they are feasible inputs. Workaround: at non-trivial rates, call the
-  solver on OTM strikes or use `iv = 0` as a sensible fallback when the
-  market sits very close to the discounted intrinsic. Targeted fix for a
-  v0.1.1 patch release.
+- **`solve_iv` negative-time-value gate** — the gate at the top of
+  `solve_iv` compared the market price against the *undiscounted*
+  intrinsic `F − K`, but the true Black-76 no-arbitrage lower bound for an
+  ITM call is the *discounted* intrinsic `exp(−rT) · (F − K)` (and
+  symmetrically for puts). ITM prices in `[df·intrinsic, intrinsic)` were
+  legitimate Black-76 outputs but got rejected with
+  `iv = iv_min, converged = false`. Fixed by comparing against
+  discounted intrinsic. Regressions:
+  `iv_solver::tests::itm_call_between_discounted_and_undiscounted_intrinsic_accepted`
+  and `..._put_...` (plus full ITM moneyness coverage in the
+  `prop_iv_roundtrip_call` proptest).
 
 ### Decisions documented for v0.1
 

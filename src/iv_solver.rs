@@ -264,15 +264,22 @@ pub fn solve_iv(
         };
     }
 
-    // 3. Negative time value: market_price < intrinsic.
+    // 3. Negative time value: `market_price` below the discounted intrinsic
+    //    `df · max(0, F − K)` for calls (or `df · max(0, K − F)` for puts).
+    //    Comparing against undiscounted intrinsic is wrong at non-zero rates
+    //    — the true Black-76 no-arbitrage lower bound for an ITM call is the
+    //    *discounted* intrinsic, and prices in `[df·intrinsic, intrinsic)`
+    //    are perfectly feasible.
     let intrinsic = pricing::intrinsic_value(f, k, is_call);
-    if market_price < intrinsic {
+    let df = (-r * t).exp();
+    let discounted_intrinsic = df * intrinsic;
+    if market_price < discounted_intrinsic {
         return SolverResult {
             iv: config.iv_min,
             method: SolverMethod::NewtonRaphson,
             iterations: 0,
             converged: false,
-            residual: (intrinsic - market_price).abs(),
+            residual: (discounted_intrinsic - market_price).abs(),
         };
     }
 
@@ -395,6 +402,71 @@ mod tests {
         let result = solve_iv(9.0, 110.0, 100.0, 1.0, 0.0, true, &config);
         assert!(!result.converged);
         assert!((result.iv - config.iv_min).abs() < f64::EPSILON);
+    }
+
+    /// Regression: at non-zero rate, ITM call/put prices that lie between
+    /// the discounted intrinsic `df·(F − K)` and the undiscounted intrinsic
+    /// `F − K` are feasible Black-76 outputs. The solver must NOT reject
+    /// them as "negative time value". Prior to the fix the gate compared
+    /// against undiscounted intrinsic and rejected legitimate prices.
+    #[test]
+    fn itm_call_between_discounted_and_undiscounted_intrinsic_accepted() {
+        let config = default_config();
+        let f = 110.0_f64;
+        let k = 100.0_f64;
+        let t = 0.5_f64;
+        let r = 0.10_f64;
+        let sigma_true = 0.05_f64;
+        let market = call_price(f, k, t, sigma_true, r);
+
+        // Sanity: market sits in the bug zone.
+        let intrinsic = f - k;
+        let discounted = intrinsic * (-r * t).exp();
+        assert!(
+            market > discounted && market < intrinsic,
+            "test inputs no longer hit the bug zone: market={market}, df·intr={discounted}, intr={intrinsic}",
+        );
+
+        let result = solve_iv(market, f, k, t, r, true, &config);
+        assert!(
+            result.converged,
+            "feasible ITM call price must converge, got {result:?}",
+        );
+        assert!(
+            (result.iv - sigma_true).abs() < 1e-4,
+            "expected σ ≈ {sigma_true}, got {}",
+            result.iv,
+        );
+    }
+
+    /// Symmetric regression for ITM puts (K > F at non-zero rate).
+    #[test]
+    fn itm_put_between_discounted_and_undiscounted_intrinsic_accepted() {
+        let config = default_config();
+        let f = 100.0_f64;
+        let k = 110.0_f64;
+        let t = 0.5_f64;
+        let r = 0.10_f64;
+        let sigma_true = 0.05_f64;
+        let market = put_price(f, k, t, sigma_true, r);
+
+        let intrinsic = k - f;
+        let discounted = intrinsic * (-r * t).exp();
+        assert!(
+            market > discounted && market < intrinsic,
+            "test inputs no longer hit the bug zone: market={market}, df·intr={discounted}, intr={intrinsic}",
+        );
+
+        let result = solve_iv(market, f, k, t, r, false, &config);
+        assert!(
+            result.converged,
+            "feasible ITM put price must converge, got {result:?}",
+        );
+        assert!(
+            (result.iv - sigma_true).abs() < 1e-4,
+            "expected σ ≈ {sigma_true}, got {}",
+            result.iv,
+        );
     }
 
     #[test]
