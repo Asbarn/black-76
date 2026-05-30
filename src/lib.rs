@@ -27,8 +27,9 @@
 //!
 //! - [`pricing`] — closed-form Black-76 call/put prices, vega, intrinsic value.
 //! - [`iv_solver`] — Newton-Raphson with Brent's-method fallback.
-//! - [`greeks`] — analytical first-order Greeks (delta, vega, theta).
-//! - [`types`] — `OptionType`, `SolverMethod`, `SolverResult`, `InstrumentGreeks`.
+//! - [`greeks`] — analytical first-order Greeks (delta, gamma, vega, theta, rho).
+//! - [`inputs`] — [`BlackInputs`] / [`IvQuery`] typo-resistant, named-field wrappers.
+//! - [`types`] — `OptionType`, `SolverMethod`, `SolverResult`, `SolverStatus`, `InstrumentGreeks`.
 //! - [`config`] — `SolverConfig` (with builder) for tuning solver parameters.
 //! - [`vol_surface`] (feature `vol-surface`) — per-expiry IV smile with linear interpolation.
 //! - [`digital`] (feature `digital`) — risk-neutral probability extraction via call-spread replication and N(d2).
@@ -42,16 +43,23 @@
 //! # Convergence checking
 //!
 //! [`iv_solver::solve_iv`] returns a [`SolverResult`] whose `converged: bool`
-//! field MUST be checked before consuming `iv`. When the market price is
-//! outside the feasible Black-76 range (e.g., below intrinsic or above
-//! `F·exp(-rT)`), `iv` is `f64::NAN` and `converged` is `false`.
+//! field MUST be checked before consuming `iv`. Whenever the solver does not
+//! converge, `iv` is [`f64::NAN`] and [`SolverStatus`] reports the precise
+//! reason (near-expiry, below intrinsic, non-positive price, no root in
+//! `[iv_min, iv_max]`, vega-floor non-identifiability, or max iterations).
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(rustdoc::broken_intra_doc_links)]
+// Black-76 uses standard single-letter math notation (f, k, t, r, sigma,
+// d1/d2, and a/b/c/d for the Brent iterates); spelling these out would reduce,
+// not improve, readability for anyone who knows the model.
+#![allow(clippy::many_single_char_names)]
 
 pub mod config;
 pub mod greeks;
+pub mod inputs;
 pub mod iv_solver;
 pub mod pricing;
 pub mod types;
@@ -67,6 +75,7 @@ pub mod digital;
 // Curated top-level re-exports
 pub use config::SolverConfig;
 pub use greeks::compute_greeks;
+pub use inputs::{BlackInputs, IvQuery};
 pub use iv_solver::{solve_iv, solve_iv_triple};
 pub use pricing::{call_price, d1_d2, intrinsic_value, price, put_price, vega};
-pub use types::{InstrumentGreeks, OptionType, SolverMethod, SolverResult};
+pub use types::{InstrumentGreeks, OptionType, SolverMethod, SolverResult, SolverStatus};
