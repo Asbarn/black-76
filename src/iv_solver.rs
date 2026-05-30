@@ -5,28 +5,32 @@
 //!
 //! ## Convergence checking
 //!
-//! Callers **must** check [`SolverResult::converged`] before consuming `iv`.
-//! When the market price is outside the feasible Black-76 range (below
-//! intrinsic, above `F·exp(-rT)`, or otherwise unattainable for any
-//! `σ ∈ [iv_min, iv_max]`), `iv` is set to [`f64::NAN`] and `converged` is
-//! `false`. The `residual` field reports `|model_price − market_price|` at
-//! the best endpoint examined.
+//! Callers **must** check [`SolverResult::converged`] (or
+//! [`SolverResult::status`]) before consuming `iv`. Whenever the solver does
+//! not converge, `iv` is [`f64::NAN`] and [`SolverStatus`] reports why.
 //!
-//! ## Edge cases handled
+//! Convergence is decided in **volatility space** — the Newton step (or the
+//! Brent bracket width) in `σ` falls below `iv_tolerance` — rather than on an
+//! absolute price residual. An absolute price tolerance is not a valid
+//! criterion where vega is small or the forward is large: the price is then
+//! flat in `σ`, so a price-based test can declare success at the wrong `σ`
+//! (audit H-2). The `residual` field still reports `|model_price − market_price|`.
 //!
-//! - **Near-expiry**: `t < near_expiry_cutoff_hours` returns
-//!   `iv = 0.0, converged = true, method = NewtonRaphson, iterations = 0`
-//!   (intrinsic-pricing sentinel).
-//! - **Zero/negative price**: returns `iv = iv_min, converged = false`.
-//! - **Negative time value** (`market_price < intrinsic`): returns
-//!   `iv = iv_min, converged = false`.
-//! - **Near-zero vega** (deep OTM/ITM): NR falls back to Brent for
-//!   guaranteed convergence inside the bracket.
-//! - **No root in bracket**: returns `iv = f64::NAN, converged = false`.
+//! ## Edge cases ([`SolverStatus`])
+//!
+//! - **Near-expiry** (`t < near_expiry_cutoff_hours`): `iv = NaN`,
+//!   `converged = false`, [`SolverStatus::NearExpiryIntrinsic`] — price the
+//!   option intrinsically yourself.
+//! - **Zero/negative price**: [`SolverStatus::NonPositivePrice`].
+//! - **Below discounted intrinsic**: [`SolverStatus::BelowIntrinsic`].
+//! - **No root in `[iv_min, iv_max]`**: [`SolverStatus::NoBracketInRange`].
+//! - **Vega below floor** (deep OTM/ITM): NR falls back to Brent; if the
+//!   price is flat in `σ`, the result is [`SolverStatus::NotIdentifiable`].
+//! - **Iteration budget exhausted**: [`SolverStatus::MaxIterations`].
 
 use crate::config::SolverConfig;
 use crate::pricing;
-use crate::types::{SolverMethod, SolverResult};
+use crate::types::{SolverMethod, SolverResult, SolverStatus};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -48,7 +52,7 @@ const TWO_PI: f64 = std::f64::consts::TAU;
 /// Clamped to `[iv_min, iv_max]`.
 fn brenner_subrahmanyam_guess(market_price: f64, f: f64, t: f64, iv_min: f64, iv_max: f64) -> f64 {
     if f <= 0.0 || t <= 0.0 {
-        return (iv_min + iv_max) / 2.0;
+        return f64::midpoint(iv_min, iv_max);
     }
     let sigma_0 = (TWO_PI / t).sqrt() * (market_price / f);
     sigma_0.clamp(iv_min, iv_max)
@@ -94,6 +98,7 @@ fn brent_solve(
             method: SolverMethod::Brent,
             iterations: 0,
             converged: false,
+            status: SolverStatus::NoBracketInRange,
             residual: best_residual,
         };
     }
@@ -110,24 +115,35 @@ fn brent_solve(
     let mut d = b - a; // previous step
 
     for i in 0..config.brent_max_iterations {
-        // Converged within tolerance.
-        if fb.abs() < config.price_tolerance {
+        // Converged: the bracket is tight in volatility space. A small σ
+        // bracket means we have pinned the root; this is scale-free and
+        // cannot report a flat-price region as converged (audit H-2).
+        if (b - a).abs() < config.iv_tolerance {
             return SolverResult {
                 iv: b,
                 method: SolverMethod::Brent,
                 iterations: i + 1,
                 converged: true,
+                status: SolverStatus::Converged,
                 residual: fb.abs(),
             };
         }
 
-        // Bracket collapsed to machine precision.
+        // Bracket collapsed to machine precision before reaching iv_tolerance.
+        // Accept only if the price residual is also tiny; otherwise the price
+        // is flat in σ here and the implied volatility is not identifiable.
         if (b - a).abs() < f64::EPSILON * (a.abs() + b.abs()).max(1.0) {
+            let converged = fb.abs() < config.price_tolerance;
             return SolverResult {
-                iv: b,
+                iv: if converged { b } else { f64::NAN },
                 method: SolverMethod::Brent,
                 iterations: i + 1,
-                converged: fb.abs() < config.price_tolerance,
+                converged,
+                status: if converged {
+                    SolverStatus::Converged
+                } else {
+                    SolverStatus::NotIdentifiable
+                },
                 residual: fb.abs(),
             };
         }
@@ -143,9 +159,9 @@ fn brent_solve(
         };
 
         // Reject interpolation when conditions for safe acceptance fail.
-        let midpoint = (a + b) / 2.0;
+        let midpoint = f64::midpoint(a, b);
         let reject_interpolation = {
-            let bound1 = (3.0 * a + b) / 4.0;
+            let bound1 = 3.0_f64.mul_add(a, b) / 4.0;
             let (lo, hi) = if bound1 < b { (bound1, b) } else { (b, bound1) };
             s < lo || s > hi
         } || (mflag && (s - b).abs() >= (b - c).abs() / 2.0)
@@ -180,12 +196,13 @@ fn brent_solve(
         }
     }
 
-    // Hit max iterations without converging.
+    // Hit max iterations without tightening the σ bracket below iv_tolerance.
     SolverResult {
-        iv: b,
+        iv: f64::NAN,
         method: SolverMethod::Brent,
         iterations: config.brent_max_iterations,
-        converged: fb.abs() < config.price_tolerance,
+        converged: false,
+        status: SolverStatus::MaxIterations,
         residual: fb.abs(),
     }
 }
@@ -232,6 +249,7 @@ fn brent_solve(
 /// assert!(result.converged);
 /// assert!((result.iv - 0.20).abs() < 1e-6);
 /// ```
+#[must_use]
 pub fn solve_iv(
     market_price: f64,
     f: f64,
@@ -245,10 +263,11 @@ pub fn solve_iv(
     let near_expiry_cutoff_years = config.near_expiry_cutoff_hours / HOURS_PER_YEAR;
     if t <= 0.0 || t < near_expiry_cutoff_years {
         return SolverResult {
-            iv: 0.0,
+            iv: f64::NAN,
             method: SolverMethod::NewtonRaphson,
             iterations: 0,
-            converged: true,
+            converged: false,
+            status: SolverStatus::NearExpiryIntrinsic,
             residual: 0.0,
         };
     }
@@ -256,10 +275,11 @@ pub fn solve_iv(
     // 2. Zero or negative market price: no valid IV exists.
     if market_price <= 0.0 {
         return SolverResult {
-            iv: config.iv_min,
+            iv: f64::NAN,
             method: SolverMethod::NewtonRaphson,
             iterations: 0,
             converged: false,
+            status: SolverStatus::NonPositivePrice,
             residual: market_price.abs(),
         };
     }
@@ -275,10 +295,11 @@ pub fn solve_iv(
     let discounted_intrinsic = df * intrinsic;
     if market_price < discounted_intrinsic {
         return SolverResult {
-            iv: config.iv_min,
+            iv: f64::NAN,
             method: SolverMethod::NewtonRaphson,
             iterations: 0,
             converged: false,
+            status: SolverStatus::BelowIntrinsic,
             residual: (discounted_intrinsic - market_price).abs(),
         };
     }
@@ -297,18 +318,23 @@ pub fn solve_iv(
         }
 
         let diff = model_price - market_price;
+        let step = diff / v;
 
-        if diff.abs() < config.price_tolerance {
+        // Converge in volatility space: a small Newton step means σ is within
+        // `iv_tolerance` of the root. Scale-free, and cannot report a flat
+        // price region as converged (audit H-2).
+        if step.abs() < config.iv_tolerance {
             return SolverResult {
                 iv: sigma,
                 method: SolverMethod::NewtonRaphson,
                 iterations: i + 1,
                 converged: true,
+                status: SolverStatus::Converged,
                 residual: diff.abs(),
             };
         }
 
-        sigma -= diff / v;
+        sigma -= step;
         sigma = sigma.clamp(config.iv_min, config.iv_max);
     }
 
@@ -321,6 +347,7 @@ pub fn solve_iv(
 /// Any individual solve failure does not block the others.
 ///
 /// Returns `(bid_result, ask_result, mid_result)`.
+#[must_use]
 #[allow(clippy::too_many_arguments)] // bid/ask/mid + 4 market inputs + is_call + config — natural arity
 pub fn solve_iv_triple(
     bid_price: f64,
@@ -387,12 +414,15 @@ mod tests {
     }
 
     #[test]
-    fn near_expiry_returns_intrinsic() {
+    fn near_expiry_returns_nan_with_status() {
         let config = default_config();
         // T = 0.0001 years ~ 0.876 hours < 2 hours cutoff
         let result = solve_iv(5.0, 105.0, 100.0, 0.0001, 0.0, true, &config);
-        assert!(result.converged);
-        assert!(result.iv.abs() < f64::EPSILON);
+        // Audit H-1: near-expiry is NOT a solved IV. It must not claim
+        // `converged`; iv is NaN and the status says why.
+        assert!(!result.converged);
+        assert!(result.iv.is_nan());
+        assert_eq!(result.status, SolverStatus::NearExpiryIntrinsic);
     }
 
     #[test]
@@ -401,7 +431,8 @@ mod tests {
         // ITM call: intrinsic = 10, market_price = 9 < intrinsic
         let result = solve_iv(9.0, 110.0, 100.0, 1.0, 0.0, true, &config);
         assert!(!result.converged);
-        assert!((result.iv - config.iv_min).abs() < f64::EPSILON);
+        assert!(result.iv.is_nan());
+        assert_eq!(result.status, SolverStatus::BelowIntrinsic);
     }
 
     /// Regression: at non-zero rate, ITM call/put prices that lie between
@@ -470,28 +501,21 @@ mod tests {
     }
 
     #[test]
-    fn zero_market_price_returns_iv_min() {
+    fn zero_market_price_returns_nan() {
         let config = default_config();
         let result = solve_iv(0.0, 100.0, 100.0, 1.0, 0.0, true, &config);
         assert!(!result.converged);
-        assert!((result.iv - config.iv_min).abs() < f64::EPSILON);
+        assert!(result.iv.is_nan());
+        assert_eq!(result.status, SolverStatus::NonPositivePrice);
     }
 
-    /// Audit CRIT-A-01 regression: when the price is below intrinsic by a
-    /// large amount, the solver should NOT return iv_min/iv_max marked as
-    /// converged. We pass through the negative-time-value gate (which already
-    /// returns iv=iv_min, converged=false). The Brent fallback no-bracket
-    /// path is exercised by the test below.
+    /// Audit CRIT-A-01 regression: when the true IV lies above `iv_max`, the
+    /// price is unattainable in `[iv_min, iv_max]`, so Brent finds no sign
+    /// change. The solver must return `iv = NaN`, `converged = false`, and
+    /// `status = NoBracketInRange` — never a clamped boundary marked converged.
     #[test]
     fn brent_no_bracket_returns_nan_iv() {
-        // Construct a price that yields fa·fb > 0 in Brent's bracket check.
-        // For F=K=100, T=1, r=0, the call price is bounded in [intrinsic, F·df]
-        // = [0, 100]. We've already gated negative-time-value (price < intrinsic).
-        // To trigger Brent's no-bracket path we need the NR loop to exit on
-        // vega-floor with sigma not converged, AND Brent to find fa·fb > 0.
-        //
-        // Test approach: construct a tight iv_max that's below the actual IV.
-        // For F=100, K=100, T=1, sigma=2.0 (200%): price ~= 79.07
+        // F=K=100, T=1, sigma=2.0 (200%): price ~= 79.07, but iv_max=1.0.
         let market_price = call_price(100.0, 100.0, 1.0, 2.0, 0.0);
         let config = SolverConfig::builder()
             .iv_min(0.01)
@@ -499,32 +523,58 @@ mod tests {
             .build();
 
         let result = solve_iv(market_price, 100.0, 100.0, 1.0, 0.0, true, &config);
-        // Either Brent returns NaN (truly no bracket) or it returns iv=iv_max
-        // with converged=false. Both are acceptable; what we MUST NOT see is
-        // converged=true with a wrong iv.
-        if !result.iv.is_nan() {
-            // Then it should be clamped to iv_max and explicitly non-converged.
-            assert!(
-                !result.converged || (result.iv - 2.0).abs() < 0.01,
-                "got iv={}, converged={}",
-                result.iv,
-                result.converged
-            );
-        } else {
-            assert!(!result.converged);
-        }
+        assert!(result.iv.is_nan());
+        assert!(!result.converged);
+        assert_eq!(result.status, SolverStatus::NoBracketInRange);
     }
 
     #[test]
-    fn iv_clamped_at_upper_bound() {
+    fn iv_above_iv_max_returns_nan() {
         let mut config = default_config();
         config.iv_max = 2.0;
         let market_price = call_price(100.0, 100.0, 1.0, 3.0, 0.0);
         let result = solve_iv(market_price, 100.0, 100.0, 1.0, 0.0, true, &config);
-        // Either NaN (no bracket) or clamped, but never falsely converged with
-        // an iv > iv_max.
-        if !result.iv.is_nan() {
-            assert!(result.iv <= config.iv_max + f64::EPSILON);
+        // Never a clamped boundary marked converged.
+        assert!(result.iv.is_nan());
+        assert!(!result.converged);
+        assert_eq!(result.status, SolverStatus::NoBracketInRange);
+    }
+
+    /// Audit H-2: convergence is decided in σ-space, so the solver works at
+    /// crypto scale (F ~ 100k) where an absolute `1e-8` price tolerance is
+    /// ~`1e-13` relative and effectively unreachable.
+    #[test]
+    fn large_forward_atm_converges() {
+        let config = default_config();
+        let f = 100_000.0;
+        let market = call_price(f, f, 0.25, 0.80, 0.0);
+        let result = solve_iv(market, f, f, 0.25, 0.0, true, &config);
+        assert!(result.converged, "large-F ATM should converge: {result:?}");
+        assert_eq!(result.status, SolverStatus::Converged);
+        assert!((result.iv - 0.80).abs() < 1e-4, "iv={}", result.iv);
+    }
+
+    /// Audit H-2: in a vega-weak region the old absolute-price gate could
+    /// report `converged` at a σ far from the true root (any σ giving a price
+    /// within `1e-8` of a near-zero market). σ-space convergence recovers the
+    /// actual generating σ, or honestly reports a non-solution (NaN).
+    #[test]
+    fn deep_otm_recovers_true_sigma_not_flat_endpoint() {
+        let config = default_config();
+        let f = 100.0;
+        let k = 250.0;
+        let t = 0.10;
+        let true_sigma = 0.60;
+        let market = call_price(f, k, t, true_sigma, 0.0);
+        let result = solve_iv(market, f, k, t, 0.0, true, &config);
+        if result.converged {
+            assert!(
+                (result.iv - true_sigma).abs() < 1e-3,
+                "converged to the wrong σ: got {}, true {true_sigma}",
+                result.iv,
+            );
+        } else {
+            assert!(result.iv.is_nan(), "non-converged result must be NaN");
         }
     }
 

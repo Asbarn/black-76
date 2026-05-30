@@ -15,7 +15,8 @@ pub enum OptionType {
 impl OptionType {
     /// Returns `true` if this is a call.
     #[inline]
-    pub fn is_call(self) -> bool {
+    #[must_use]
+    pub const fn is_call(self) -> bool {
         matches!(self, OptionType::Call)
     }
 }
@@ -47,12 +48,43 @@ pub enum SolverMethod {
     Brent,
 }
 
+/// Why the IV solver returned — the precise outcome behind a (non-)convergence
+/// (see [`SolverResult`]).
+///
+/// New variants may be added in future minor versions (the enum is
+/// `#[non_exhaustive]`); always include a wildcard arm when matching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
+pub enum SolverStatus {
+    /// A volatility was found within tolerance. `iv` is finite and usable.
+    Converged,
+    /// Time to expiry was below the near-expiry cutoff; the option should be
+    /// priced intrinsically and no implied volatility is solved. `iv` is
+    /// [`f64::NAN`].
+    NearExpiryIntrinsic,
+    /// The market price was zero or negative — no implied volatility exists.
+    /// `iv` is [`f64::NAN`].
+    NonPositivePrice,
+    /// The market price was below the discounted intrinsic value (the
+    /// Black-76 no-arbitrage lower bound). `iv` is [`f64::NAN`].
+    BelowIntrinsic,
+    /// No root exists in `[iv_min, iv_max]` — the price is unattainable for
+    /// any volatility in that range. `iv` is [`f64::NAN`].
+    NoBracketInRange,
+    /// Vega is below `vega_floor`, so the implied volatility is not
+    /// numerically identifiable from the price. `iv` is [`f64::NAN`].
+    NotIdentifiable,
+    /// The solver exhausted its iteration budget without meeting the
+    /// volatility-space tolerance. `iv` is [`f64::NAN`].
+    MaxIterations,
+}
+
 /// Result of an [`iv_solver::solve_iv`](crate::iv_solver::solve_iv) attempt.
 ///
-/// **Important:** check `converged` before consuming `iv`. When no root
-/// exists in the feasible IV range (market price below intrinsic, above
-/// `F·exp(-rT)`, or otherwise outside the Black-76 envelope), `iv` is
-/// `f64::NAN` and `converged` is `false`.
+/// **Check `converged` (or `status`) before consuming `iv`.** Whenever the
+/// solver does not converge, `iv` is [`f64::NAN`] and `status` explains why.
+/// `converged` is exactly `status == SolverStatus::Converged`.
 ///
 /// New fields may be added in future minor versions; construct via the
 /// solver, not via field initializers.
@@ -60,16 +92,20 @@ pub enum SolverMethod {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub struct SolverResult {
-    /// Solved implied volatility (annualized). `f64::NAN` if not converged.
+    /// Solved implied volatility (annualized). [`f64::NAN`] unless `status` is
+    /// [`SolverStatus::Converged`].
     pub iv: f64,
     /// Solver method used to produce this result.
     pub method: SolverMethod,
     /// Number of iterations taken.
     pub iterations: u32,
-    /// Whether the solver converged within the configured tolerance.
+    /// Whether the solver converged. Equivalent to
+    /// `status == SolverStatus::Converged`.
     pub converged: bool,
+    /// The precise outcome of the solve (the reason behind `converged`).
+    pub status: SolverStatus,
     /// Residual `|model_price - market_price|` at the solution (or at the
-    /// best endpoint when no root was found).
+    /// best endpoint examined when no root was found).
     pub residual: f64,
 }
 
@@ -77,28 +113,34 @@ pub struct SolverResult {
 // Greeks
 // ---------------------------------------------------------------------------
 
-/// First-order Greeks for a single option.
-///
-/// Gamma is intentionally omitted; if you need it, use the finite-difference
-/// pattern in `examples/greeks.rs` or open an issue.
+/// First-order Greeks (plus gamma) for a single option.
 ///
 /// Sign and unit conventions:
-/// - **delta**: dimensionless; positive for calls, negative for puts.
-/// - **vega**: price change per 1% absolute change in volatility (i.e.,
-///   `vega_per_001 = raw_dv_dsigma / 100`).
-/// - **theta**: per-day time decay (per calendar day; division by 365.25).
+/// - **delta**: dimensionless; `df · N(d1)` (call) or `df · (N(d1) − 1)` (put).
+/// - **gamma**: `∂²price/∂F²`, per unit forward (raw, not scaled); identical
+///   for calls and puts.
+/// - **vega**: price change per **1%** absolute change in volatility
+///   (`raw_dv_dsigma / 100`); identical for calls and puts.
+/// - **theta**: per-calendar-day time decay (year = 365.25 days); negative
+///   for long positions.
+/// - **rho**: price change per **1%** absolute change in the rate
+///   (`∂price/∂r / 100`); negative under Black-76 (`∂C/∂r = −T·C`).
 ///
 /// New fields may be added in future minor versions.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub struct InstrumentGreeks {
-    /// Delta: sensitivity to the forward, `df · N(d1)` (call) or `df · (N(d1) - 1)` (put).
+    /// Delta: sensitivity to the forward, `df · N(d1)` (call) or `df · (N(d1) − 1)` (put).
     pub delta: f64,
+    /// Gamma: `∂²price/∂F² = df · n(d1) / (F · σ · √T)` (per unit forward, raw).
+    pub gamma: f64,
     /// Vega: price change for a 1% absolute change in IV (per-1%, not per-1).
     pub vega: f64,
     /// Theta: per-day price decay.
     pub theta: f64,
+    /// Rho: price change for a 1% absolute change in the rate (per-1%).
+    pub rho: f64,
 }
 
 #[cfg(test)]

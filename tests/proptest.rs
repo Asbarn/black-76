@@ -117,10 +117,13 @@ proptest! {
             result.converged,
             "solver failed to converge: F={f}, K={k}, T={t}, σ={s}, r={r}, market={market}, result={result:?}",
         );
+        // Convergence is decided in σ-space (audit H-2), so the price residual
+        // scales with vega rather than being bounded by an absolute price
+        // tolerance. Assert a scale-relative residual instead.
         prop_assert!(
-            result.residual < cfg.price_tolerance * 10.0,
-            "price residual {} not within 10x tolerance {}",
-            result.residual, cfg.price_tolerance,
+            result.residual < 1e-5 * (1.0 + market.abs()),
+            "price residual {} too large relative to market {market}",
+            result.residual,
         );
         prop_assert!(
             (result.iv - s).abs() < 1e-2,
@@ -234,5 +237,60 @@ proptest! {
         // Trivial positivity.
         prop_assert!(c >= -tol, "call must be non-negative");
         prop_assert!(p >= -tol, "put must be non-negative");
+    }
+
+    /// Put-call parity holds to a price-relative tolerance even deep ITM/OTM,
+    /// bounding the deep-ITM cancellation noted in `pricing` (audit L-2).
+    #[test]
+    fn prop_parity_wide_moneyness(
+        f in forward(),
+        m in 0.2_f64..5.0_f64,
+        t in time(),
+        s in sigma(),
+        r in rate(),
+    ) {
+        let k = f * m;
+        let c = call_price(f, k, t, s, r);
+        let p = put_price(f, k, t, s, r);
+        let df = (-r * t).exp();
+        let lhs = c - p;
+        let rhs = df * (f - k);
+        prop_assert!(
+            (lhs - rhs).abs() < 1e-8 * (1.0 + f.abs() + k.abs()),
+            "wide-moneyness parity violated: C−P={lhs}, df(F−K)={rhs} (F={f}, K={k}, T={t}, σ={s}, r={r})",
+        );
+    }
+
+    /// All Greeks stay finite across the well-conditioned strategy space,
+    /// gamma is non-negative, and rho matches a central finite difference.
+    #[test]
+    fn prop_greeks_finite_and_rho_fd(
+        f in forward(),
+        m in 0.7_f64..1.4_f64,
+        t in time(),
+        s in 0.10_f64..1.0_f64,
+        r in rate(),
+    ) {
+        let k = f * m;
+        let g = compute_greeks(f, k, t, s, r, true);
+
+        prop_assert!(
+            g.delta.is_finite() && g.gamma.is_finite() && g.vega.is_finite()
+                && g.theta.is_finite() && g.rho.is_finite(),
+            "non-finite greek: {g:?} (F={f}, K={k}, T={t}, σ={s}, r={r})",
+        );
+        prop_assert!(g.gamma >= 0.0, "gamma must be non-negative, got {}", g.gamma);
+
+        // Rho via central difference of price in r, per 1% (robust first diff).
+        let hr = 1e-6;
+        let c_up = call_price(f, k, t, s, r + hr);
+        let c_dn = call_price(f, k, t, s, r - hr);
+        let fd_rho = ((c_up - c_dn) / (2.0 * hr)) / 100.0;
+        let rho_scale = (g.rho.abs() + f).max(1.0);
+        prop_assert!(
+            (g.rho - fd_rho).abs() < 1e-4 * rho_scale,
+            "rho analytic {} vs FD {} (F={f}, K={k}, T={t}, σ={s}, r={r})",
+            g.rho, fd_rho,
+        );
     }
 }

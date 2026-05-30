@@ -21,8 +21,10 @@ fn main() {
     println!("-----------------------------------------------------------");
     println!("            {:>14} {:>14}", "Call", "Put");
     println!("delta       {:>14.6} {:>14.6}", call.delta, put.delta);
+    println!("gamma       {:>14.6} {:>14.6}", call.gamma, put.gamma);
     println!("vega (1%)   {:>14.6} {:>14.6}", call.vega, put.vega);
     println!("theta /day  {:>14.6} {:>14.6}", call.theta, put.theta);
+    println!("rho (1%)    {:>14.6} {:>14.6}", call.rho, put.rho);
 
     // Finite-difference cross-check of vega (per-unit sigma, then per 1%).
     let bump = 1e-4_f64;
