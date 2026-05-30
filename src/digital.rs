@@ -3,10 +3,11 @@
 //! Two independent estimators for `P_Q(F_T > K)` under the risk-neutral
 //! measure:
 //!
-//! 1. **Call-spread replication** (primary): uses real adjacent strikes from
-//!    the [`VolSmile`] to compute a tight call spread. Captures observed
-//!    skew. The discounted price difference is rescaled by `exp(rT)` to
-//!    recover the undiscounted probability — see HIGH-A-02 in CHANGELOG.
+//! 1. **Call-spread replication** (primary): a tight call spread centered on
+//!    the target strike, priced with the smile's interpolated (skew-aware) IV
+//!    at each leg. The discounted price difference is rescaled by `exp(rT)` to
+//!    recover the undiscounted probability (see HIGH-A-02), and centered on the
+//!    target to avoid the strike-location bias of audit M-2.
 //! 2. **N(d2)** (baseline): closed-form Black-76 risk-neutral probability
 //!    with skew adjustment (`strike_iv − atm_iv`). Always available when
 //!    the smile can interpolate at the target strike.
@@ -107,22 +108,30 @@ pub enum ProbabilityMethod {
 // Call-spread replication
 // ---------------------------------------------------------------------------
 
-/// Compute `P_Q(F_T > target_strike)` via call-spread replication.
+/// Compute `P_Q(F_T > target_strike)` via call-spread replication, centered on
+/// the target strike.
 ///
-/// Uses the smile's nearest bracket `(k_lower, k_upper)` around the target
-/// strike, prices a call at each bracket using its interpolated IV, and
-/// derives the risk-neutral probability from the discounted price difference
-/// rescaled by `exp(rT)` to undo discounting:
+/// Steps out symmetrically from `target_strike` by `ε` (the local observed
+/// half-spacing, clamped to keep both legs inside the smile), prices a call at
+/// `target ± ε` using the IV interpolated at each leg, and recovers the
+/// risk-neutral probability from the discount-corrected central difference:
 ///
 /// ```text
-/// P_Q(F_T > K) ≈ (c(k_lower) − c(k_upper)) / ((k_upper − k_lower) · exp(−rT))
+/// P_Q(F_T > K) ≈ (c(K − ε) − c(K + ε)) / (2ε · exp(−rT))
 /// ```
 ///
+/// Centering on the target — rather than on the midpoint of two observed
+/// strikes — removes the strike-location bias of audit M-2.
+///
 /// Returns `None` when:
-/// - the smile cannot produce a two-sided bracket around `target_strike`;
-/// - the bracket half-width exceeds `max_epsilon`;
-/// - IV interpolation fails at either bracket strike;
-/// - the bracket has non-positive width.
+/// - the smile cannot bracket `target_strike` (target outside observed range);
+/// - the local observed half-spacing exceeds `max_epsilon` (smile too sparse —
+///   the caller falls back to `N(d2)`);
+/// - IV interpolation fails at either leg;
+/// - the usable step `ε` is non-positive;
+/// - the raw probability falls outside `[0, 1]` — a smile arbitrage (e.g.
+///   `c(K − ε) < c(K + ε)`) reported as unavailable rather than silently
+///   clamped (audit M-2).
 fn call_spread_probability(
     target_strike: f64,
     smile: &VolSmile,
@@ -131,36 +140,58 @@ fn call_spread_probability(
     rate: f64,
     max_epsilon: f64,
 ) -> Option<CallSpreadResult> {
+    // Use the local observed bracket only to size the step and to gate on
+    // smile density; the actual finite difference is centered on the target.
     let (k_lower, k_upper) = smile.nearest_bracket(target_strike)?;
 
-    let epsilon = (k_upper - k_lower) / 2.0;
-    if epsilon > max_epsilon {
+    let half_spacing = (k_upper - k_lower) / 2.0;
+    if half_spacing > max_epsilon {
+        // Local smile spacing too wide for a reliable call spread; the caller
+        // falls back to N(d2).
         return None;
     }
 
-    let iv_lower = smile.interpolate(k_lower)?;
-    let iv_upper = smile.interpolate(k_upper)?;
-
-    let c_lower = call_price(forward, k_lower, time_to_expiry, iv_lower, rate);
-    let c_upper = call_price(forward, k_upper, time_to_expiry, iv_upper, rate);
-
-    let spread = k_upper - k_lower;
-    if spread <= 0.0 {
+    // Center the difference on the target (audit M-2): the central difference
+    // estimates the CDF at the MIDPOINT of its two legs, so evaluating at
+    // observed grid strikes returns P(F > bracket-midpoint), not P(F > target).
+    // Keep both legs inside the interpolation range.
+    let first = smile.points.first()?.strike;
+    let last = smile.points.last()?.strike;
+    let epsilon = half_spacing
+        .min(target_strike - first)
+        .min(last - target_strike);
+    if epsilon <= 0.0 {
         return None;
     }
 
-    // HIGH-A-02: undo discounting so the result is a probability, not a
-    // discounted-probability proxy. Without the `/ df` term the value
-    // collapses to `~0.5 · exp(−rT)` at the ATM strike and silently biases
-    // downstream confidence scoring.
+    let k_low = target_strike - epsilon;
+    let k_high = target_strike + epsilon;
+
+    let iv_low = smile.interpolate(k_low)?;
+    let iv_high = smile.interpolate(k_high)?;
+
+    let c_low = call_price(forward, k_low, time_to_expiry, iv_low, rate);
+    let c_high = call_price(forward, k_high, time_to_expiry, iv_high, rate);
+
+    // HIGH-A-02: undo discounting (the `/ df`) so the result is a probability,
+    // not a discounted-probability proxy.
     let df = (-rate * time_to_expiry).exp();
-    let prob = ((c_lower - c_upper) / spread / df).clamp(0.0, 1.0);
+    let raw_prob = (c_low - c_high) / (2.0 * epsilon) / df;
+
+    // Audit M-2: do NOT silently clamp. A raw probability outside [0, 1] (or
+    // `c_low < c_high`) signals a smile arbitrage or numerical breakdown;
+    // report it as unavailable rather than returning a plausible-looking
+    // 0.0 / 1.0. A tiny float-noise overshoot is tolerated, then clamped.
+    if !raw_prob.is_finite() || !(-1e-9..=1.0 + 1e-9).contains(&raw_prob) {
+        return None;
+    }
+    let prob = raw_prob.clamp(0.0, 1.0);
 
     Some(CallSpreadResult {
         probability: prob,
         epsilon_used: epsilon,
-        k_lower,
-        k_upper,
+        k_lower: k_low,
+        k_upper: k_high,
     })
 }
 
@@ -204,6 +235,7 @@ fn nd2_probability(
 ///
 /// Returns `None` when IV cannot be interpolated at `target_strike` (so
 /// `N(d2)` is also unavailable).
+#[must_use]
 pub fn extract_probabilities(
     target_strike: f64,
     smile: &VolSmile,
@@ -408,6 +440,58 @@ mod tests {
         assert!(
             diff < 0.02,
             "flat-surface methods must agree, got diff={diff}"
+        );
+    }
+
+    /// Audit M-2: for an off-grid target the call spread must estimate
+    /// `P(F > target)`, not `P(F > bracket-midpoint)`. On strikes
+    /// {90,95,100,105,110}, target 96 brackets to (95,100) whose midpoint is
+    /// 97.5 — the old code located the probability there.
+    #[test]
+    fn call_spread_recenters_on_off_grid_target() {
+        let smile = flat_smile(0.20);
+        let f = 100.0;
+        let target = 96.0;
+        let cs = call_spread_probability(target, &smile, f, 1.0, 0.0, 10.0)
+            .expect("flat smile brackets the target");
+
+        // True digital at the target vs at the (wrong) bracket midpoint.
+        let p_target = nd2_probability(f, target, 1.0, 0.20, None).probability;
+        let p_midpoint = nd2_probability(f, 97.5, 1.0, 0.20, None).probability;
+
+        assert!(
+            (cs.probability - p_target).abs() < 1.5e-2,
+            "call spread {} should track P(F>{target})={p_target}",
+            cs.probability,
+        );
+        assert!(
+            (cs.probability - p_target).abs() < (cs.probability - p_midpoint).abs(),
+            "call spread {} should be closer to the target digital {p_target} \
+             than to the midpoint digital {p_midpoint}",
+            cs.probability,
+        );
+        // The evaluated legs are centered on the target.
+        assert!(((cs.k_lower + cs.k_upper) / 2.0 - target).abs() < 1e-9);
+    }
+
+    /// Audit M-2: an arbitraging smile (extreme wing IV makes the higher-strike
+    /// call worth more than the lower-strike one) must yield `None`, not a
+    /// silently clamped `0.0`.
+    #[test]
+    fn call_spread_rejects_arbitraging_smile() {
+        let config = VolSurfaceConfig::default();
+        let points = vec![
+            make_point(90.0, 0.20, 0.01),
+            make_point(95.0, 0.20, 0.01),
+            make_point(100.0, 0.20, 0.01),
+            make_point(105.0, 0.20, 0.01),
+            make_point(110.0, 3.00, 0.01), // pathological wing
+        ];
+        let smile = VolSmile::new(None, points, &config, 100.0);
+        let result = call_spread_probability(107.0, &smile, 100.0, 1.0, 0.0, 10.0);
+        assert!(
+            result.is_none(),
+            "arbitraging smile must yield None, got {result:?}",
         );
     }
 }
