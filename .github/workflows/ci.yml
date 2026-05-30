@@ -90,6 +90,15 @@ jobs:
           RUSTDOCFLAGS: --cfg docsrs -D warnings
         run: cargo doc --all-features --no-deps
 
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-audit
+      - run: cargo audit
+
   publish-dry-run:
     name: publish --dry-run
     runs-on: ubuntu-latest

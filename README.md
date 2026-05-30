@@ -17,13 +17,15 @@ and crypto perpetual-futures options.
 ## Features
 
 - Closed-form **call / put prices**, **vega**, and **intrinsic value**.
-- First-order **Greeks** (delta, vega per 1%, theta per day).
+- First-order **Greeks** — delta, gamma, vega (per 1%), theta (per day), rho (per 1%).
 - **Implied-volatility solver** — Newton–Raphson with a Brent's-method
-  fallback when vega is too small (deep OTM / near-expiry).
-- Explicit **convergence contract**: a [`SolverResult`] with `iv = NaN` and
-  `converged = false` when the market price is outside the feasible
-  Black-76 envelope. No silently clamped boundary values pretending to be
-  solutions.
+  fallback when vega is too small (deep OTM / near-expiry). Convergence is
+  decided in **volatility space**, so it holds at any forward scale.
+- Explicit **convergence contract**: a [`SolverResult`] whose `iv` is `NaN`
+  (and `converged = false`) on **every** non-converged path, plus a
+  [`SolverStatus`] enum giving the exact reason (near-expiry, below intrinsic,
+  non-positive price, no root in range, not identifiable, max iterations).
+  No silently clamped boundary values pretending to be solutions.
 - Optional **per-expiry vol smile** (`vol-surface`) with linear
   interpolation and flat extrapolation.
 - Optional **risk-neutral probability extraction** (`digital`) via
@@ -53,6 +55,23 @@ assert!(result.converged);
 assert!((result.iv - 0.20).abs() < 1e-4);
 ```
 
+### Typo-resistant inputs
+
+Positional `f64` arguments are easy to mis-order. [`BlackInputs`] and
+[`IvQuery`] name every field (and are `const`-constructible):
+
+```rust
+use black_76::{BlackInputs, IvQuery, SolverConfig};
+
+let inputs = BlackInputs::new(100.0, 100.0, 1.0, 0.20, 0.0); // f, k, t, sigma, r
+let c = inputs.call_price();
+let g = inputs.greeks(true); // delta, gamma, vega, theta, rho
+
+let iv = IvQuery::new(c, 100.0, 100.0, 1.0, 0.0, true)
+    .solve(&SolverConfig::default());
+assert!(iv.converged);
+```
+
 ### Convergence checking is mandatory
 
 ```rust
@@ -64,12 +83,12 @@ let result = solve_iv(/* implausibly high market price */ 1_000.0,
 if result.converged {
     println!("IV = {}", result.iv);
 } else {
-    eprintln!("no feasible IV — result.iv is NaN");
+    eprintln!("no IV ({:?}) — result.iv is NaN", result.status);
 }
 ```
 
-Skipping the `converged` check is a bug: `iv` is `f64::NAN` when no root
-exists in `[iv_min, iv_max]`.
+Skipping the `converged` check is a bug: `iv` is `f64::NAN` on every
+non-converged path, and [`SolverStatus`] tells you which one.
 
 ## Feature flags
 
@@ -115,6 +134,26 @@ cargo bench --bench iv_solver
 - **Rate** is continuous compounding.
 - All numerics are `f64`. The crate exposes no `Decimal`-typed APIs.
 
+## Comparison with alternatives
+
+| | `black-76` | `py_vollib` | QuantLib (bindings) | `RustQuant` / `black_scholes` |
+|---|---|---|---|---|
+| Language | pure Rust | Python + C ext | C++ via FFI | Rust |
+| Runtime deps | `statrs` only | NumPy/SciPy | QuantLib | varies |
+| Async / runtime | none | — | — | none |
+| Model focus | Black-76 (forwards/futures) | Black / BS / -76 | everything | mostly Black-Scholes |
+| IV solver | Newton + Brent, **typed `SolverStatus`** | Newton / `lets_be_rational` | various | basic / varies |
+| Non-convergence | `iv = NaN` + status enum | exceptions | exceptions | often silent / `unwrap` |
+| Greeks | delta, gamma, vega, theta, rho | full | full | partial |
+| Smile / digitals | optional (`vol-surface`, `digital`) | — | full surfaces | — |
+| `forbid(unsafe_code)` | yes | n/a | no (FFI) | varies |
+| MSRV / semver | 1.85, `#[non_exhaustive]` API | n/a | n/a | varies |
+
+`black-76` is intentionally **small and sharp**: a synchronous, dependency-light
+forward-options pricer with a rigorous, typed convergence contract — not a full
+derivatives library. Reach for QuantLib when you need exotic products or full
+curve/surface machinery.
+
 ## MSRV
 
 Rust **1.85** (Edition 2024).
@@ -146,4 +185,7 @@ license, shall be dual-licensed as above, without any additional terms or
 conditions.
 
 [`SolverResult`]: https://docs.rs/black-76/latest/black_76/struct.SolverResult.html
+[`SolverStatus`]: https://docs.rs/black-76/latest/black_76/enum.SolverStatus.html
+[`BlackInputs`]: https://docs.rs/black-76/latest/black_76/struct.BlackInputs.html
+[`IvQuery`]: https://docs.rs/black-76/latest/black_76/struct.IvQuery.html
 [`VolSmile`]: https://docs.rs/black-76/latest/black_76/vol_surface/struct.VolSmile.html

@@ -7,3 +7,5 @@ Cargo.lock
 *.swo
 .vscode/
 .idea/
+clippy_out.txt
+AUDIT_REPORT.md

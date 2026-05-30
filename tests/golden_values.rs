@@ -71,16 +71,48 @@ const CASES: &[(f64, f64, f64, f64, f64, f64, &str)] = &[
         11.892_954_840_563_526,
         "regression lock",
     ),
+    // External references computed with an independent `math.erf` implementation
+    // (Python, not this crate's `statrs`): a drift here means the math is wrong,
+    // not merely changed.
+    (
+        50.0,
+        48.0,
+        0.75,
+        0.35,
+        0.02,
+        6.852_097_035_414_271,
+        "external: independent erf reference",
+    ),
+    (
+        4200.0,
+        4000.0,
+        0.30,
+        0.45,
+        0.015,
+        507.654_133_607_437,
+        "external: independent erf reference (crypto-scale forward)",
+    ),
+    (
+        1.0,
+        1.2,
+        2.0,
+        0.60,
+        0.0,
+        0.269_288_257_583_031_54,
+        "external: independent erf reference",
+    ),
 ];
 
 #[test]
 fn golden_call_prices() {
-    let tol = 1e-12_f64;
     for &(f, k, t, sigma, r, expected, kind) in CASES {
         let actual = call_price(f, k, t, sigma, r);
         let err = (actual - expected).abs();
+        // Scale-relative tolerance so large-forward (crypto-scale) rows are not
+        // held to a sub-ULP absolute bound while small values stay tight.
+        let bound = 1e-12 * (1.0 + expected.abs());
         assert!(
-            err < tol,
+            err < bound,
             "{kind}: F={f}, K={k}, T={t}, σ={sigma}, r={r} — expected {expected}, got {actual}, |err|={err:.2e}",
         );
     }
@@ -91,15 +123,15 @@ fn golden_put_prices_via_parity() {
     // Verify the put pricing path through `P = C − df·(F − K)`. Catches an
     // independent regression in the put branch of `pricing.rs` even if the
     // call branch matches its golden value above.
-    let tol = 1e-12_f64;
     for &(f, k, t, sigma, r, _expected_c, kind) in CASES {
         let actual_c = call_price(f, k, t, sigma, r);
         let actual_p = put_price(f, k, t, sigma, r);
         let df = (-r * t).exp();
         let parity_p = actual_c - df * (f - k);
         let err = (actual_p - parity_p).abs();
+        let bound = 1e-12 * (1.0 + f.abs());
         assert!(
-            err < tol,
+            err < bound,
             "{kind}: put violates parity — P={actual_p}, parity_P={parity_p}, |err|={err:.2e}",
         );
     }

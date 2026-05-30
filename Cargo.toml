@@ -15,6 +15,7 @@ categories = ["mathematics", "science", "algorithms"]
 exclude = [
     ".github/",
     "benches/results/",
+    "AUDIT_REPORT.md",
 ]
 
 [features]

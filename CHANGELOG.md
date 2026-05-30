@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `SolverStatus` enum on `SolverResult` — the precise reason behind a
+  (non-)convergence: `Converged`, `NearExpiryIntrinsic`, `NonPositivePrice`,
+  `BelowIntrinsic`, `NoBracketInRange`, `NotIdentifiable`, `MaxIterations`.
+- Gamma and rho on `InstrumentGreeks` (gamma per unit forward; rho per 1%).
+- `BlackInputs` and `IvQuery` — typo-resistant, named-field wrappers over the
+  positional free functions, with `const` constructors.
+- `SolverConfig::iv_tolerance` — volatility-space convergence tolerance.
+- `#![forbid(unsafe_code)]`, `#[must_use]` on pure functions and builders, and
+  `const fn` builder setters.
+
+### Changed
+
+- **Convergence is now decided in volatility space** (`|Δσ| < iv_tolerance`
+  for Newton-Raphson; bracket width in `σ` for Brent), not on an absolute
+  price residual. This removes false `converged = true` results in vega-weak
+  or large-forward regimes and is scale-free (audit **H-2**). The price
+  residual is still reported.
+- **`solve_iv` returns `iv = f64::NAN` on every non-converged path** and sets
+  `converged = false` for the near-expiry case (previously `iv = 0.0,
+  converged = true`, and `iv = iv_min` for infeasible prices). The documented
+  NaN/`converged` contract is now honored everywhere (audit **H-1**).
+- `compute_greeks` guards `sigma <= 0` (mirroring `pricing`), returning the
+  intrinsic delta and zero higher-order Greeks instead of `NaN` (audit **M-1**).
+- `digital` call-spread probability is centered on the target strike (not the
+  bracket midpoint), and no longer silently clamps an arbitraging smile to
+  `[0, 1]` — it returns `None` instead (audit **M-2**).
+- `d1_d2` rearranged to avoid forming `σ²` (overflow-safe) and to use fused
+  multiply-add for tighter rounding (audit **L-1**, **P-2**). Golden values are
+  unchanged within their `1e-12` tolerance.
+
+### Documented
+
+- Input preconditions (`F > 0, K > 0`, finite) on the pricing API, asserted in
+  debug builds within `d1_d2` (audit **M-4**).
+- `vol_surface` interpolation is not arbitrage-free; `nearest_bracket` now uses
+  a scale-relative strike-equality tolerance for crypto-magnitude strikes
+  (audit **M-3**, **L-3**).
+
 ## [0.1.0] — 2026-05-28
 
 Initial public release. Extracted from the `prediction` repository's
