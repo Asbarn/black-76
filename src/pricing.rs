@@ -15,6 +15,23 @@
 //!
 //! All functions operate in `f64` space. Reference: Hull, *Options, Futures,
 //! and Other Derivatives*, 10th ed., §17.
+//!
+//! # Preconditions
+//!
+//! Callers must pass finite `F > 0` and `K > 0`, `T >= 0`, and `sigma >= 0`.
+//! These are **not** validated in release builds (the hot path is
+//! allocation-free and panic-free); violating them yields `NaN`/`inf` rather
+//! than an error. Debug builds assert `F > 0 && K > 0` in [`d1_d2`]. Validate
+//! untrusted or exchange-sourced inputs before calling.
+//!
+//! # Numerical notes
+//!
+//! Deep in-the-money prices are computed directly as `F·N(d1) − K·N(d2)`, which
+//! subtracts two large near-equal terms, so the small time value can lose a few
+//! digits of relative precision (bounded in the test suite via put-call parity,
+//! audit L-2). For most uses this is immaterial; if you need maximal deep-ITM
+//! precision, price the out-of-the-money wing and recover the in-the-money side
+//! via parity `C = df·(F − K) + P`.
 
 use statrs::distribution::{Continuous, ContinuousCDF, Normal};
 
@@ -38,10 +55,19 @@ use statrs::distribution::{Continuous, ContinuousCDF, Normal};
 /// assert!((d2 + 0.10).abs() < 1e-10);
 /// ```
 #[inline]
+#[must_use]
 pub fn d1_d2(f: f64, k: f64, t: f64, sigma: f64) -> (f64, f64) {
-    let sqrt_t = t.sqrt();
-    let d1 = ((f / k).ln() + 0.5 * sigma * sigma * t) / (sigma * sqrt_t);
-    let d2 = d1 - sigma * sqrt_t;
+    debug_assert!(
+        f > 0.0 && k > 0.0 && f.is_finite() && k.is_finite(),
+        "d1_d2 requires finite F > 0 and K > 0 (got F={f}, K={k})"
+    );
+    // `v = σ√T` is the total volatility. Writing d1 as `ln(F/K)/v + v/2` is
+    // algebraically identical to `(ln(F/K) + σ²T/2) / (σ√T)` but never forms
+    // `σ²`, so it does not overflow to NaN for extreme σ (audit L-1). The
+    // fused multiply-add also keeps the rounding tighter (audit P-2).
+    let v = sigma * t.sqrt();
+    let d1 = 0.5_f64.mul_add(v, (f / k).ln() / v);
+    let d2 = d1 - v;
     (d1, d2)
 }
 
@@ -66,6 +92,7 @@ pub fn d1_d2(f: f64, k: f64, t: f64, sigma: f64) -> (f64, f64) {
 /// let c = call_price(100.0, 100.0, 1.0, 0.20, 0.0);
 /// assert!((c - 7.96556746).abs() < 1e-6);
 /// ```
+#[must_use]
 pub fn call_price(f: f64, k: f64, t: f64, sigma: f64, r: f64) -> f64 {
     if t <= 0.0 || sigma <= 0.0 {
         return intrinsic_value(f, k, true);
@@ -73,7 +100,7 @@ pub fn call_price(f: f64, k: f64, t: f64, sigma: f64, r: f64) -> f64 {
     let (d1, d2) = d1_d2(f, k, t, sigma);
     let norm = Normal::standard();
     let df = (-r * t).exp();
-    df * (f * norm.cdf(d1) - k * norm.cdf(d2))
+    df * f.mul_add(norm.cdf(d1), -(k * norm.cdf(d2)))
 }
 
 /// Black-76 put price.
@@ -95,6 +122,7 @@ pub fn call_price(f: f64, k: f64, t: f64, sigma: f64, r: f64) -> f64 {
 /// let parity = (-r * t).exp() * (f - k);
 /// assert!((c - p - parity).abs() < 1e-10);
 /// ```
+#[must_use]
 pub fn put_price(f: f64, k: f64, t: f64, sigma: f64, r: f64) -> f64 {
     if t <= 0.0 || sigma <= 0.0 {
         return intrinsic_value(f, k, false);
@@ -102,11 +130,12 @@ pub fn put_price(f: f64, k: f64, t: f64, sigma: f64, r: f64) -> f64 {
     let (d1, d2) = d1_d2(f, k, t, sigma);
     let norm = Normal::standard();
     let df = (-r * t).exp();
-    df * (k * norm.cdf(-d2) - f * norm.cdf(-d1))
+    df * k.mul_add(norm.cdf(-d2), -(f * norm.cdf(-d1)))
 }
 
 /// Dispatches to [`call_price`] or [`put_price`] based on `is_call`.
 #[inline]
+#[must_use]
 pub fn price(f: f64, k: f64, t: f64, sigma: f64, r: f64, is_call: bool) -> f64 {
     if is_call {
         call_price(f, k, t, sigma, r)
@@ -138,6 +167,7 @@ pub fn price(f: f64, k: f64, t: f64, sigma: f64, r: f64, is_call: bool) -> f64 {
 /// let v = vega(100.0, 100.0, 1.0, 0.20, 0.0);
 /// assert!(v > 0.0);
 /// ```
+#[must_use]
 pub fn vega(f: f64, k: f64, t: f64, sigma: f64, r: f64) -> f64 {
     if t <= 0.0 || sigma <= 0.0 {
         return 0.0;
@@ -157,6 +187,7 @@ pub fn vega(f: f64, k: f64, t: f64, sigma: f64, r: f64) -> f64 {
 /// - Call: `max(F − K, 0)`
 /// - Put: `max(K − F, 0)`
 #[inline]
+#[must_use]
 pub fn intrinsic_value(f: f64, k: f64, is_call: bool) -> f64 {
     if is_call {
         (f - k).max(0.0)
@@ -261,6 +292,15 @@ mod tests {
     fn vega_degenerate_inputs() {
         assert!(vega(100.0, 100.0, 0.0, 0.20, 0.0).abs() < f64::EPSILON);
         assert!(vega(100.0, 100.0, 1.0, 0.0, 0.0).abs() < f64::EPSILON);
+    }
+
+    /// Audit M-4: debug builds assert `F > 0 && K > 0` so misuse surfaces in
+    /// tests rather than silently producing NaN/inf.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "K > 0")]
+    fn d1_d2_debug_asserts_positive_strike() {
+        let _ = d1_d2(100.0, 0.0, 1.0, 0.20);
     }
 
     /// Intrinsic value correctness.
