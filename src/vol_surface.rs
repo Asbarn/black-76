@@ -7,6 +7,16 @@
 //! [`Degraded`](SmileQuality::Degraded) / [`Empty`](SmileQuality::Empty))
 //! reflect surface reliability for downstream confidence.
 //!
+//! # Arbitrage
+//!
+//! Linear-in-strike interpolation and flat-wing extrapolation are **not**
+//! guaranteed arbitrage-free: the implied risk-neutral density (`∂²C/∂K²`, per
+//! Breeden-Litzenberger) can go negative between nodes, so digitals derived
+//! from this smile may be locally inconsistent. This is a lightweight smoothing
+//! utility — for arbitrage-free surfaces use a total-variance or SVI/SABR
+//! parameterization (Gatheral, *The Volatility Surface*) or arbitrage-free
+//! smoothing (Fengler 2009).
+//!
 //! # Quick start
 //!
 //! ```
@@ -85,33 +95,36 @@ impl VolSurfaceConfig {
 /// Builder for [`VolSurfaceConfig`].
 ///
 /// Each setter consumes `self` and returns a new builder; call
-/// [`build`](Self::build) to produce the final config.
+/// [`build`](Self::build) to produce the final config. All setters are
+/// `const fn`, so a config can be assembled in a `const` context.
 #[derive(Debug, Clone)]
+#[must_use = "a builder does nothing unless you call `.build()`"]
 pub struct VolSurfaceConfigBuilder {
     inner: VolSurfaceConfig,
 }
 
 impl VolSurfaceConfigBuilder {
     /// Sets `min_usable_strikes`.
-    pub fn min_usable_strikes(mut self, value: usize) -> Self {
+    pub const fn min_usable_strikes(mut self, value: usize) -> Self {
         self.inner.min_usable_strikes = value;
         self
     }
 
     /// Sets `good_strike_count`.
-    pub fn good_strike_count(mut self, value: usize) -> Self {
+    pub const fn good_strike_count(mut self, value: usize) -> Self {
         self.inner.good_strike_count = value;
         self
     }
 
     /// Sets `max_iv_spread_filter`.
-    pub fn max_iv_spread_filter(mut self, value: f64) -> Self {
+    pub const fn max_iv_spread_filter(mut self, value: f64) -> Self {
         self.inner.max_iv_spread_filter = value;
         self
     }
 
     /// Consumes the builder and returns the configured [`VolSurfaceConfig`].
-    pub fn build(self) -> VolSurfaceConfig {
+    #[must_use]
+    pub const fn build(self) -> VolSurfaceConfig {
         self.inner
     }
 }
@@ -140,6 +153,7 @@ pub struct SmilePoint {
 impl SmilePoint {
     /// Construct a smile point. The bid-ask spread is computed as
     /// `ask_iv - bid_iv`.
+    #[must_use]
     pub fn new(strike: f64, iv: f64, bid_iv: f64, ask_iv: f64) -> Self {
         Self {
             strike,
@@ -205,6 +219,7 @@ impl VolSmile {
     /// Filters out points with excessive IV spread or non-positive IV,
     /// sorts the remaining points by strike, determines the quality tier,
     /// and identifies ATM IV as the point nearest to the forward price.
+    #[must_use]
     pub fn new(
         expiry: Option<i64>,
         raw_points: Vec<SmilePoint>,
@@ -276,11 +291,13 @@ impl VolSmile {
     }
 
     /// Number of usable points in the smile.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.points.len()
     }
 
     /// True if no usable points remain.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.points.is_empty()
     }
@@ -294,6 +311,7 @@ impl VolSmile {
     /// - Below the minimum strike: flat extrapolation (first point's IV).
     /// - Above the maximum strike: flat extrapolation (last point's IV).
     /// - Between two points: linear interpolation.
+    #[must_use]
     pub fn interpolate(&self, strike: f64) -> Option<f64> {
         if self.quality == SmileQuality::Empty {
             return None;
@@ -346,6 +364,7 @@ impl VolSmile {
     ///
     /// Returns `None` if the target is below all or above all observed
     /// strikes (cannot bracket), or if fewer than two points exist.
+    #[must_use]
     pub fn nearest_bracket(&self, target_strike: f64) -> Option<(f64, f64)> {
         if self.points.len() < 2 {
             return None;
@@ -360,8 +379,18 @@ impl VolSmile {
 
         let idx = self.points.partition_point(|p| p.strike < target_strike);
 
-        if idx < self.points.len() && (self.points[idx].strike - target_strike).abs() < f64::EPSILON
+        // Scale-relative equality so an on-grid strike is recognized at crypto
+        // magnitudes (e.g. 100_000), where an absolute `f64::EPSILON` never
+        // matches a strike that was computed rather than typed (audit L-3).
+        let strike_eq_tol = 1e-9 * target_strike.abs().max(1.0);
+
+        if idx < self.points.len()
+            && (self.points[idx].strike - target_strike).abs() <= strike_eq_tol
         {
+            // Exact hit on an observed strike: use the neighbors on BOTH sides
+            // so the spread straddles the target. On a non-uniform grid this
+            // widens the spread; the caller (`call_spread_probability`) caps
+            // and recenters it on the target.
             if idx == 0 || idx >= self.points.len() - 1 {
                 return None;
             }
@@ -378,6 +407,7 @@ impl VolSmile {
     /// Compute skew at a given strike: `interpolate(strike) - atm_iv`.
     ///
     /// Returns `None` if ATM IV is unavailable or interpolation fails.
+    #[must_use]
     pub fn skew_at(&self, strike: f64) -> Option<f64> {
         let atm = self.atm_iv?;
         let strike_iv = self.interpolate(strike)?;
@@ -569,6 +599,34 @@ mod tests {
         let (lower, upper) = smile.nearest_bracket(100000.0).unwrap();
         assert!((lower - 95000.0).abs() < f64::EPSILON);
         assert!((upper - 105000.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn nearest_bracket_near_grid_target_recognized_at_scale() {
+        let smile = make_good_smile(); // strikes 90_000 ..= 110_000
+        // A target a hair below the 100_000 node (as if computed with rounding)
+        // is recognized as the on-grid strike thanks to the scale-relative
+        // tolerance (audit L-3); an absolute f64::EPSILON would miss it and
+        // return (95_000, 100_000) instead.
+        let (lower, upper) = smile.nearest_bracket(100_000.0 - 1e-5).unwrap();
+        assert!((lower - 95_000.0).abs() < f64::EPSILON);
+        assert!((upper - 105_000.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn nearest_bracket_uneven_grid_exact_hit() {
+        let config = default_config();
+        let points = vec![
+            make_point(100.0, 0.30, 0.02),
+            make_point(101.0, 0.29, 0.02),
+            make_point(150.0, 0.40, 0.02),
+        ];
+        let smile = VolSmile::new(None, points, &config, 101.0);
+        // Exact hit at 101 -> neighbors on both sides (100, 150); the spread is
+        // wide because the grid is uneven.
+        let (lower, upper) = smile.nearest_bracket(101.0).unwrap();
+        assert!((lower - 100.0).abs() < f64::EPSILON);
+        assert!((upper - 150.0).abs() < f64::EPSILON);
     }
 
     #[test]
