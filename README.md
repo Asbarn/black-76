@@ -17,8 +17,8 @@ and crypto perpetual-futures options.
 ## Features
 
 - Closed-form **call / put prices**, **vega**, and **intrinsic value**.
-- First-order **Greeks** — delta, gamma, vega (per 1%), theta (per day), rho (per 1%).
-- **Implied-volatility solver** — Newton–Raphson with a Brent's-method
+- First-order **Greeks**: delta, gamma, vega (per 1%), theta (per day), rho (per 1%).
+- **Implied-volatility solver**: Newton-Raphson with a Brent's-method
   fallback when vega is too small (deep OTM / near-expiry). Convergence is
   decided in **volatility space**, so it holds at any forward scale.
 - Explicit **convergence contract**: a [`SolverResult`] whose `iv` is `NaN`
@@ -44,7 +44,7 @@ black-76 = "0.1"
 ```rust
 use black_76::{call_price, solve_iv, SolverConfig};
 
-// Price an ATM call: F=100, K=100, T=1 year, σ=20%, r=0
+// Price an ATM call: F=100, K=100, T=1 year, sigma=20%, r=0
 let c = call_price(100.0, 100.0, 1.0, 0.20, 0.0);
 assert!((c - 7.9656).abs() < 1e-3);
 
@@ -83,7 +83,7 @@ let result = solve_iv(/* implausibly high market price */ 1_000.0,
 if result.converged {
     println!("IV = {}", result.iv);
 } else {
-    eprintln!("no IV ({:?}) — result.iv is NaN", result.status);
+    eprintln!("no IV ({:?}); result.iv is NaN", result.status);
 }
 ```
 
@@ -125,10 +125,22 @@ cargo bench --bench pricing
 cargo bench --bench iv_solver
 ```
 
+Indicative single-thread timings (Criterion median, `--release`, AMD Ryzen 7
+PRO 8840U). Treat them as ballpark rather than a guarantee:
+
+| Operation                              | Median   |
+|----------------------------------------|----------|
+| `d1_d2`                                | ~20 ns   |
+| `call_price` (ATM)                     | ~68 ns   |
+| `put_price` (ATM)                      | ~63 ns   |
+| `vega` (ATM)                           | ~41 ns   |
+| `solve_iv` (Newton path)               | ~320 ns  |
+| `solve_iv` (Brent fallback, deep OTM)  | ~3300 ns |
+
 ## Conventions
 
 - **Vega** is reported per 1% absolute change in IV (trader convention),
-  i.e. the raw `dC/dσ` divided by 100.
+  i.e. the raw `dC/dsigma` divided by 100.
 - **Theta** is reported per calendar day with `year = 365.25` days.
 - **Time** is in years.
 - **Rate** is continuous compounding.
@@ -140,22 +152,32 @@ cargo bench --bench iv_solver
 |---|---|---|---|---|
 | Language | pure Rust | Python + C ext | C++ via FFI | Rust |
 | Runtime deps | `statrs` only | NumPy/SciPy | QuantLib | varies |
-| Async / runtime | none | — | — | none |
+| Async / runtime | none | n/a | n/a | none |
 | Model focus | Black-76 (forwards/futures) | Black / BS / -76 | everything | mostly Black-Scholes |
 | IV solver | Newton + Brent, **typed `SolverStatus`** | Newton / `lets_be_rational` | various | varies |
 | Non-convergence | `iv = NaN` + status enum | exceptions | exceptions | varies by crate |
 | Greeks | delta, gamma, vega, theta, rho | full | full | crate-dependent |
-| Smile / digitals | optional (`vol-surface`, `digital`) | — | full surfaces | — |
+| Smile / digitals | optional (`vol-surface`, `digital`) | n/a | full surfaces | n/a |
 | `forbid(unsafe_code)` | yes | n/a | no (FFI) | varies |
 | MSRV / semver | 1.85, `#[non_exhaustive]` API | n/a | n/a | varies |
 
-<sub>Comparison reflects general positioning rather than pinned versions; verify
-the specifics against each project's current release.</sub>
+The table is positioning, not a precise feature audit; check each project's
+current release for specifics.
 
-`black-76` is intentionally **small and sharp**: a synchronous, dependency-light
-forward-options pricer with a rigorous, typed convergence contract — not a full
+`black-76` is deliberately narrow: a synchronous, dependency-light
+forward-options pricer with a typed convergence contract, not a full
 derivatives library. Reach for QuantLib when you need exotic products or full
 curve/surface machinery.
+
+## Background
+
+This began as the pricing core of a crypto-options arbitrage system, where I
+needed Black-76 prices, Greeks, and an implied-vol solver that were
+allocation-free on the hot path and explicit about non-convergence: near
+expiry, deep out-of-the-money, or at exchange-scale forwards (BTC ~100k) where
+an absolute price tolerance stops being meaningful. I pulled the pure-math
+modules out of that project and generalized them into this standalone `f64`
+crate.
 
 ## MSRV
 

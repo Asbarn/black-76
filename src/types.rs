@@ -55,7 +55,7 @@ pub enum SolverMethod {
     Brent,
 }
 
-/// Why the IV solver returned — the precise outcome behind a (non-)convergence
+/// Why the IV solver returned: the precise outcome behind a (non-)convergence
 /// (see [`SolverResult`]).
 ///
 /// New variants may be added in future minor versions (the enum is
@@ -70,13 +70,13 @@ pub enum SolverStatus {
     /// priced intrinsically and no implied volatility is solved. `iv` is
     /// [`f64::NAN`].
     NearExpiryIntrinsic,
-    /// The market price was zero or negative — no implied volatility exists.
+    /// The market price was zero or negative; no implied volatility exists.
     /// `iv` is [`f64::NAN`].
     NonPositivePrice,
     /// The market price was below the discounted intrinsic value (the
     /// Black-76 no-arbitrage lower bound). `iv` is [`f64::NAN`].
     BelowIntrinsic,
-    /// No root exists in `[iv_min, iv_max]` — the price is unattainable for
+    /// No root exists in `[iv_min, iv_max]`; the price is unattainable for
     /// any volatility in that range. `iv` is [`f64::NAN`].
     NoBracketInRange,
     /// Vega is below `vega_floor`, so the implied volatility is not
@@ -127,24 +127,24 @@ pub struct SolverResult {
 /// First-order Greeks (plus gamma) for a single option.
 ///
 /// Sign and unit conventions:
-/// - **delta**: dimensionless; `df · N(d1)` (call) or `df · (N(d1) − 1)` (put).
-/// - **gamma**: `∂²price/∂F²`, per unit forward (raw, not scaled); identical
-///   for calls and puts.
+/// - **delta**: dimensionless; `df * N(d1)` (call) or `df * (N(d1) - 1)` (put).
+/// - **gamma**: `d^2 price / dF^2`, per unit forward (raw, not scaled);
+///   identical for calls and puts.
 /// - **vega**: price change per **1%** absolute change in volatility
 ///   (`raw_dv_dsigma / 100`); identical for calls and puts.
 /// - **theta**: per-calendar-day time decay (year = 365.25 days); negative
 ///   for long positions.
 /// - **rho**: price change per **1%** absolute change in the rate
-///   (`∂price/∂r / 100`); negative under Black-76 (`∂C/∂r = −T·C`).
+///   (`dprice/dr / 100`); negative under Black-76 (`dC/dr = -T*C`).
 ///
 /// New fields may be added in future minor versions.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub struct InstrumentGreeks {
-    /// Delta: sensitivity to the forward, `df · N(d1)` (call) or `df · (N(d1) − 1)` (put).
+    /// Delta: sensitivity to the forward, `df * N(d1)` (call) or `df * (N(d1) - 1)` (put).
     pub delta: f64,
-    /// Gamma: `∂²price/∂F² = df · n(d1) / (F · σ · √T)` (per unit forward, raw).
+    /// Gamma: `d^2 price / dF^2 = df * n(d1) / (F * sigma * sqrt(T))` (per unit forward, raw).
     pub gamma: f64,
     /// Vega: price change for a 1% absolute change in IV (per-1%, not per-1).
     pub vega: f64,

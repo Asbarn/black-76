@@ -2,20 +2,20 @@
 //!
 //! Properties exercised:
 //!
-//! 1. **Put-call parity**: `C − P = exp(−rT) · (F − K)` for any well-formed
+//! 1. **Put-call parity**: `C - P = exp(-rT) * (F - K)` for any well-formed
 //!    input.
 //! 2. **IV roundtrip**: solving for IV from a synthesised market price
 //!    recovers the original sigma within solver tolerance.
 //! 3. **Vega FD cross-check**: analytic vega agrees with a central finite
 //!    difference of the call price.
-//! 4. **Monotonicity in σ**: call and put prices are non-decreasing in
+//! 4. **Monotonicity in sigma**: call and put prices are non-decreasing in
 //!    volatility.
 //! 5. **Bounds**: prices lie within their no-arbitrage envelopes
 //!    `[intrinsic_discounted, max_value_discounted]`.
 //!
 //! Strategies cover ATM and well-conditioned wings, deliberately avoiding
-//! deep-OTM corners where vega → 0 and the IV roundtrip can fail Newton
-//! convergence (handled by the Brent fallback but with looser tolerance —
+//! deep-OTM corners where vega -> 0 and the IV roundtrip can fail Newton
+//! convergence (handled by the Brent fallback but with looser tolerance,
 //! tested separately in the unit tests).
 
 use proptest::prelude::*;
@@ -38,12 +38,12 @@ fn time() -> impl Strategy<Value = f64> {
     0.05_f64..3.0_f64
 }
 
-/// Volatility in `[0.05, 2.0]` (5%–200%).
+/// Volatility in `[0.05, 2.0]` (5%-200%).
 fn sigma() -> impl Strategy<Value = f64> {
     0.05_f64..2.0_f64
 }
 
-/// Rate in `[−0.05, 0.20]`.
+/// Rate in `[-0.05, 0.20]`.
 fn rate() -> impl Strategy<Value = f64> {
     -0.05_f64..0.20_f64
 }
@@ -71,7 +71,7 @@ proptest! {
         let rhs = df * (f - k);
         prop_assert!(
             (lhs - rhs).abs() < 1e-8 * (1.0 + f.abs()),
-            "parity violated: C − P = {lhs}, df·(F − K) = {rhs} (F={f}, T={t}, σ={s}, r={r})",
+            "parity violated: C - P = {lhs}, df*(F - K) = {rhs} (F={f}, T={t}, sigma={s}, r={r})",
         );
 
         // Repeat with a non-trivial strike.
@@ -82,16 +82,16 @@ proptest! {
         let rhs2 = df * (f - k2);
         prop_assert!(
             (lhs2 - rhs2).abs() < 1e-8 * (1.0 + f.abs()),
-            "OTM parity violated: C − P = {lhs2}, df·(F − K) = {rhs2}",
+            "OTM parity violated: C - P = {lhs2}, df*(F - K) = {rhs2}",
         );
     }
 
-    /// IV solved from a synthesised market price recovers the original σ.
+    /// IV solved from a synthesised market price recovers the original sigma.
     ///
-    /// Convergence is decided in *volatility space* (audit H-2): the solver
-    /// stops when the Newton step in σ falls below `iv_tolerance`. The price
+    /// Convergence is decided in *volatility space*: the solver
+    /// stops when the Newton step in sigma falls below `iv_tolerance`. The price
     /// residual then scales with vega rather than being bounded by an absolute
-    /// price tolerance — in vega-weak regions several IVs map to nearly the
+    /// price tolerance, in vega-weak regions several IVs map to nearly the
     /// same price, so this test asserts a scale-relative price residual plus an
     /// IV-recovery bound.
     #[test]
@@ -105,8 +105,8 @@ proptest! {
         let k = f * m;
         let market = call_price(f, k, t, s, r);
 
-        // Skip vanishing-time-value cases (`market` − discounted intrinsic
-        // ≈ 0, where vega → 0 and the inverse is numerically ill-defined).
+        // Skip vanishing-time-value cases (`market` - discounted intrinsic
+        // ~= 0, where vega -> 0 and the inverse is numerically ill-defined).
         let df = (-r * t).exp();
         let discounted_intrinsic = df * (f - k).max(0.0);
         prop_assume!(market - discounted_intrinsic > 0.01 * f);
@@ -116,9 +116,9 @@ proptest! {
 
         prop_assert!(
             result.converged,
-            "solver failed to converge: F={f}, K={k}, T={t}, σ={s}, r={r}, market={market}, result={result:?}",
+            "solver failed to converge: F={f}, K={k}, T={t}, sigma={s}, r={r}, market={market}, result={result:?}",
         );
-        // Convergence is decided in σ-space (audit H-2), so the price residual
+        // Convergence is decided in sigma-space, so the price residual
         // scales with vega rather than being bounded by an absolute price
         // tolerance. Assert a scale-relative residual instead.
         prop_assert!(
@@ -153,7 +153,7 @@ proptest! {
         let scale = (analytic.abs() + f).max(1.0);
         prop_assert!(
             (fd - analytic).abs() < 1e-3 * scale,
-            "vega FD={fd}, analytic={analytic} (F={f}, K={k}, T={t}, σ={s}, r={r})",
+            "vega FD={fd}, analytic={analytic} (F={f}, K={k}, T={t}, sigma={s}, r={r})",
         );
 
         // The per-1% Greek is exactly analytic/100.
@@ -164,7 +164,7 @@ proptest! {
         );
     }
 
-    /// Both call and put prices are non-decreasing in σ.
+    /// Both call and put prices are non-decreasing in sigma.
     #[test]
     fn prop_monotonic_in_sigma(
         f in forward(),
@@ -186,11 +186,11 @@ proptest! {
         let tol_p = 1e-10 * (p1.abs() + p2.abs() + 1.0);
         prop_assert!(
             c2 + tol_c >= c1,
-            "call not monotonic: σ={s1}→{c1}, σ={s2}→{c2}",
+            "call not monotonic: sigma={s1}->{c1}, sigma={s2}->{c2}",
         );
         prop_assert!(
             p2 + tol_p >= p1,
-            "put not monotonic: σ={s1}→{p1}, σ={s2}→{p2}",
+            "put not monotonic: sigma={s1}->{p1}, sigma={s2}->{p2}",
         );
     }
 
@@ -213,25 +213,25 @@ proptest! {
 
         let tol = 1e-10 * (f + 1.0);
 
-        // Call: discounted intrinsic ≤ C ≤ df · F
+        // Call: discounted intrinsic <= C <= df * F
         prop_assert!(
             c + tol >= call_intrinsic,
             "call below discounted intrinsic: C={c}, intrinsic*df={call_intrinsic}",
         );
         prop_assert!(
             c <= df * f + tol,
-            "call above df·F: C={c}, df·F={}",
+            "call above df*F: C={c}, df*F={}",
             df * f,
         );
 
-        // Put: discounted intrinsic ≤ P ≤ df · K
+        // Put: discounted intrinsic <= P <= df * K
         prop_assert!(
             p + tol >= put_intrinsic,
             "put below discounted intrinsic: P={p}, intrinsic*df={put_intrinsic}",
         );
         prop_assert!(
             p <= df * k + tol,
-            "put above df·K: P={p}, df·K={}",
+            "put above df*K: P={p}, df*K={}",
             df * k,
         );
 
@@ -241,7 +241,7 @@ proptest! {
     }
 
     /// Put-call parity holds to a price-relative tolerance even deep ITM/OTM,
-    /// bounding the deep-ITM cancellation noted in `pricing` (audit L-2).
+    /// bounding the deep-ITM cancellation noted in `pricing`.
     #[test]
     fn prop_parity_wide_moneyness(
         f in forward(),
@@ -258,7 +258,7 @@ proptest! {
         let rhs = df * (f - k);
         prop_assert!(
             (lhs - rhs).abs() < 1e-8 * (1.0 + f.abs() + k.abs()),
-            "wide-moneyness parity violated: C−P={lhs}, df(F−K)={rhs} (F={f}, K={k}, T={t}, σ={s}, r={r})",
+            "wide-moneyness parity violated: C-P={lhs}, df(F-K)={rhs} (F={f}, K={k}, T={t}, sigma={s}, r={r})",
         );
     }
 
@@ -278,7 +278,7 @@ proptest! {
         prop_assert!(
             g.delta.is_finite() && g.gamma.is_finite() && g.vega.is_finite()
                 && g.theta.is_finite() && g.rho.is_finite(),
-            "non-finite greek: {g:?} (F={f}, K={k}, T={t}, σ={s}, r={r})",
+            "non-finite greek: {g:?} (F={f}, K={k}, T={t}, sigma={s}, r={r})",
         );
         prop_assert!(g.gamma >= 0.0, "gamma must be non-negative, got {}", g.gamma);
 
@@ -290,7 +290,7 @@ proptest! {
         let rho_scale = (g.rho.abs() + f).max(1.0);
         prop_assert!(
             (g.rho - fd_rho).abs() < 1e-4 * rho_scale,
-            "rho analytic {} vs FD {} (F={f}, K={k}, T={t}, σ={s}, r={r})",
+            "rho analytic {} vs FD {} (F={f}, K={k}, T={t}, sigma={s}, r={r})",
             g.rho, fd_rho,
         );
 
@@ -299,7 +299,7 @@ proptest! {
         let fd_delta = (call_price(f + hf, k, t, s, r) - call_price(f - hf, k, t, s, r)) / (2.0 * hf);
         prop_assert!(
             (g.delta - fd_delta).abs() < 1e-4 * (g.delta.abs() + 1.0),
-            "delta analytic {} vs FD {} (F={f}, K={k}, T={t}, σ={s}, r={r})",
+            "delta analytic {} vs FD {} (F={f}, K={k}, T={t}, sigma={s}, r={r})",
             g.delta, fd_delta,
         );
 
@@ -311,7 +311,7 @@ proptest! {
         let theta_scale = (theta_year_analytic.abs() + f).max(1.0);
         prop_assert!(
             (theta_year_analytic - theta_year_fd).abs() < 1e-3 * theta_scale,
-            "theta/yr analytic {} vs FD {} (F={f}, K={k}, T={t}, σ={s}, r={r})",
+            "theta/yr analytic {} vs FD {} (F={f}, K={k}, T={t}, sigma={s}, r={r})",
             theta_year_analytic, theta_year_fd,
         );
     }

@@ -25,20 +25,20 @@
 //!
 //! # Modules
 //!
-//! - [`pricing`] — closed-form Black-76 call/put prices, vega, intrinsic value.
-//! - [`iv_solver`] — Newton-Raphson with Brent's-method fallback.
-//! - [`greeks`] — analytical first-order Greeks (delta, gamma, vega, theta, rho).
-//! - [`inputs`] — [`BlackInputs`] / [`IvQuery`] typo-resistant, named-field wrappers.
-//! - [`types`] — `OptionType`, `SolverMethod`, `SolverResult`, `SolverStatus`, `InstrumentGreeks`.
-//! - [`config`] — `SolverConfig` (with builder) for tuning solver parameters.
-//! - [`vol_surface`] (feature `vol-surface`) — per-expiry IV smile with linear interpolation.
-//! - [`digital`] (feature `digital`) — risk-neutral probability extraction via call-spread replication and N(d2).
+//! - [`pricing`]: closed-form Black-76 call/put prices, vega, intrinsic value.
+//! - [`iv_solver`]: Newton-Raphson with Brent's-method fallback.
+//! - [`greeks`]: analytical first-order Greeks (delta, gamma, vega, theta, rho).
+//! - [`inputs`]: [`BlackInputs`] / [`IvQuery`] typo-resistant, named-field wrappers.
+//! - [`types`]: `OptionType`, `SolverMethod`, `SolverResult`, `SolverStatus`, `InstrumentGreeks`.
+//! - [`config`]: `SolverConfig` (with builder) for tuning solver parameters.
+//! - [`vol_surface`] (feature `vol-surface`): per-expiry IV smile with linear interpolation.
+//! - [`digital`] (feature `digital`): risk-neutral probability extraction via call-spread replication and N(d2).
 //!
 //! # Feature flags
 //!
-//! - `serde` — adds `Serialize` / `Deserialize` derives on public types.
-//! - `vol-surface` — enables [`vol_surface`].
-//! - `digital` — enables [`digital`] (requires `vol-surface`).
+//! - `serde`: adds `Serialize` / `Deserialize` derives on public types.
+//! - `vol-surface`: enables [`vol_surface`].
+//! - `digital`: enables [`digital`] (requires `vol-surface`).
 //!
 //! # Convergence checking
 //!

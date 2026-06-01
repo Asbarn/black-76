@@ -18,7 +18,7 @@ fn main() {
 
     // Synthesize a market price from a known sigma.
     let market_price = call_price(forward, strike, time_to_expiry, true_sigma, rate);
-    println!("Synthesised market price: {market_price:.6} (true σ = {true_sigma:.4})");
+    println!("Synthesised market price: {market_price:.6} (true sigma = {true_sigma:.4})");
     println!();
 
     let config = SolverConfig::default();
@@ -37,12 +37,12 @@ fn main() {
             "Converged via {:?} in {} iteration(s):",
             result.method, result.iterations
         );
-        println!("  solved σ  = {:.10}", result.iv);
-        println!("  true σ    = {true_sigma:.10}");
-        println!("  σ error   = {:.2e}", (result.iv - true_sigma).abs());
+        println!("  solved sigma = {:.10}", result.iv);
+        println!("  true sigma   = {true_sigma:.10}");
+        println!("  sigma error  = {:.2e}", (result.iv - true_sigma).abs());
         println!("  residual  = {:.2e}", result.residual);
     } else {
-        eprintln!("Solver did NOT converge — do NOT consume iv (it may be NaN).");
+        eprintln!("Solver did NOT converge; do NOT consume iv (it may be NaN).");
         eprintln!("Result: {result:?}");
         std::process::exit(1);
     }

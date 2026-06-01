@@ -28,7 +28,7 @@ const DAYS_PER_YEAR: f64 = 365.25;
 /// # Edge cases
 ///
 /// When `t <= 0` **or** `sigma <= 0` (no time value), returns the intrinsic
-/// delta (`1.0` for an ITM call, `-1.0` for an ITM put, `0.0` for OTM — the
+/// delta (`1.0` for an ITM call, `-1.0` for an ITM put, `0.0` for OTM; the
 /// at-the-money `F == K` boundary maps to `0.0`), with
 /// `gamma = vega = theta = rho = 0`. This mirrors `pricing`'s `sigma <= 0`
 /// guard so the Greeks never return `NaN` for a degenerate but finite input.
@@ -36,14 +36,14 @@ const DAYS_PER_YEAR: f64 = 365.25;
 /// # Sign and unit conventions
 ///
 /// - **Delta**: dimensionless; positive for calls, negative for puts.
-/// - **Gamma**: `∂²price/∂F²`, per unit forward (raw); identical for calls
-///   and puts.
-/// - **Vega**: per **1%** absolute change in IV (raw `dC/dσ` ÷ 100) — the
+/// - **Gamma**: `d^2 price / dF^2`, per unit forward (raw); identical for
+///   calls and puts.
+/// - **Vega**: per **1%** absolute change in IV (raw `dC/dsigma / 100`), the
 ///   trader convention; identical for calls and puts.
 /// - **Theta**: per calendar day (year = 365.25 days); negative for long
 ///   positions (time decay).
-/// - **Rho**: per **1%** absolute change in the rate (`∂price/∂r` ÷ 100);
-///   negative under Black-76 (`∂C/∂r = −T·C`).
+/// - **Rho**: per **1%** absolute change in the rate (`dprice/dr / 100`);
+///   negative under Black-76 (`dC/dr = -T*price`).
 ///
 /// # Examples
 ///
@@ -54,7 +54,7 @@ const DAYS_PER_YEAR: f64 = 365.25;
 /// assert!(g.gamma > 0.0);
 /// assert!(g.vega > 0.0);
 /// assert!(g.theta < 0.0);                  // long options decay
-/// assert!(g.rho < 0.0);                    // Black-76 rho = -T·price
+/// assert!(g.rho < 0.0);                    // Black-76 rho = -T*price
 /// ```
 #[must_use]
 pub fn compute_greeks(
@@ -67,10 +67,9 @@ pub fn compute_greeks(
 ) -> InstrumentGreeks {
     // Degenerate case: expired (t <= 0) or zero/negative volatility. Both have
     // no time value and no smooth sensitivities; return the intrinsic delta.
-    //
-    // Per audit M-1: without the `sigma <= 0` arm, `d1 = 0/0 = NaN` at the
-    // money, so delta/theta would be NaN — unlike `pricing`, which already
-    // guards `sigma <= 0`. This keeps the two modules consistent and NaN-free.
+    // Without the `sigma <= 0` arm, `d1 = 0/0 = NaN` at the money, so
+    // delta/theta would be NaN, unlike `pricing`, which already guards
+    // `sigma <= 0`. This keeps the two modules consistent and NaN-free.
     if t <= 0.0 || sigma <= 0.0 {
         let delta = if is_call {
             if f > k { 1.0 } else { 0.0 }
@@ -101,7 +100,7 @@ pub fn compute_greeks(
         df * (norm.cdf(d1) - 1.0)
     };
 
-    // Gamma: ∂²price/∂F² = df · n(d1) / (F · σ · √T); identical for call/put.
+    // Gamma: d^2 price / dF^2 = df * n(d1) / (F * sigma * sqrt(T)); same call/put.
     let gamma = df * n_d1 / (f * sigma * sqrt_t);
 
     // Vega: per-1% IV move (trader convention).
@@ -114,11 +113,7 @@ pub fn compute_greeks(
         df * k.mul_add(norm.cdf(-d2), -(f * norm.cdf(-d1)))
     };
 
-    // Theta (per day).
-    //
-    // Per audit HIGH-A-01: the prediction repo's original code computed
-    // carry_cost = -r*C (wrong sign). Correct Black-76 theta per Hull §17.8
-    // eq 17.4 and Haug §1.1.5:
+    // Theta (per day). Black-76 theta per Hull §17.8 eq 17.4 and Haug §1.1.5:
     //
     //   theta = -df * F * n(d1) * sigma / (2*sqrt(T)) + r * price
     //
@@ -127,11 +122,11 @@ pub fn compute_greeks(
     // -r*C + F*df*n(d1)*sigma/(2*sqrt(T)) (using F*n(d1) = K*n(d2)).
     // Therefore theta = -dC/dT = r*price - F*df*n(d1)*sigma/(2*sqrt(T)).
     let time_decay = -df * f * n_d1 * sigma / (2.0 * sqrt_t);
-    let carry_cost = r * price; // +r·C (call) / +r·P (put)
+    let carry_cost = r * price; // +r*C (call) / +r*P (put)
     let theta = (time_decay + carry_cost) / DAYS_PER_YEAR;
 
-    // Rho: ∂price/∂r. In Black-76 the forward F is held fixed as r varies, so
-    // ∂C/∂r = -T·C and ∂P/∂r = -T·P. Reported per-1% (÷100), like vega.
+    // Rho: dprice/dr. In Black-76 the forward F is held fixed as r varies, so
+    // dC/dr = -T*C and dP/dr = -T*P. Reported per-1% (/100), like vega.
     let rho = (-t * price) / 100.0;
 
     InstrumentGreeks {
@@ -196,9 +191,9 @@ mod tests {
         assert!((g.delta + 1.0).abs() < f64::EPSILON);
     }
 
-    /// Audit HIGH-A-01 regression: theta carry term has the correct sign.
-    /// Verified via finite-difference at r=0.05 (the case where the old wrong
-    /// sign would produce a ~10% relative error).
+    /// Theta carry term has the correct sign and magnitude, checked against a
+    /// central finite difference at r=0.05 (a wrong carry sign produces a ~10%
+    /// relative error here).
     #[test]
     fn theta_sign_correct_at_nonzero_rate() {
         let f = 100.0;
@@ -209,25 +204,23 @@ mod tests {
 
         let g = compute_greeks(f, k, t, sigma, r, true);
 
-        // Finite-difference theta as benchmark: dC/dt where wall-clock time
-        // advances; we let T decrease by dt.
-        let dt = 1.0 / DAYS_PER_YEAR; // one day
-        let c_now = call_price(f, k, t, sigma, r);
-        let c_later = call_price(f, k, t - dt, sigma, r);
-        let theta_fd_per_day = c_later - c_now;
+        // theta (per year) = -dC/dT via a symmetric step in T, then per-day.
+        let h = 1e-4;
+        let c_up = call_price(f, k, t + h, sigma, r);
+        let c_dn = call_price(f, k, t - h, sigma, r);
+        let theta_fd_per_day = -(c_up - c_dn) / (2.0 * h) / DAYS_PER_YEAR;
 
         let rel_err = (g.theta - theta_fd_per_day).abs() / theta_fd_per_day.abs().max(1e-6);
         assert!(
-            rel_err < 1e-3,
-            "theta analytic {} vs FD {} rel err {}; \
-             if this fails the theta carry-term sign is wrong",
+            rel_err < 1e-5,
+            "theta analytic {} vs FD {} rel err {}",
             g.theta,
             theta_fd_per_day,
             rel_err
         );
     }
 
-    /// Same FD check for puts.
+    /// Same central-difference check for puts.
     #[test]
     fn theta_sign_correct_at_nonzero_rate_put() {
         let f = 100.0;
@@ -237,14 +230,14 @@ mod tests {
         let r = 0.05;
 
         let g = compute_greeks(f, k, t, sigma, r, false);
-        let dt = 1.0 / DAYS_PER_YEAR;
-        let p_now = put_price(f, k, t, sigma, r);
-        let p_later = put_price(f, k, t - dt, sigma, r);
-        let theta_fd_per_day = p_later - p_now;
+        let h = 1e-4;
+        let p_up = put_price(f, k, t + h, sigma, r);
+        let p_dn = put_price(f, k, t - h, sigma, r);
+        let theta_fd_per_day = -(p_up - p_dn) / (2.0 * h) / DAYS_PER_YEAR;
 
         let rel_err = (g.theta - theta_fd_per_day).abs() / theta_fd_per_day.abs().max(1e-6);
         assert!(
-            rel_err < 1e-3,
+            rel_err < 1e-5,
             "put theta analytic vs FD rel err {}",
             rel_err
         );
@@ -285,7 +278,7 @@ mod tests {
     fn rho_matches_fd_and_sign() {
         let (f, k, t, sigma, r) = (100.0, 100.0, 1.0, 0.20, 0.05);
         let g = compute_greeks(f, k, t, sigma, r, true);
-        assert!(g.rho < 0.0, "Black-76 call rho = -T·C < 0");
+        assert!(g.rho < 0.0, "Black-76 call rho = -T*C < 0");
 
         // FD of price wrt r, then per-1%.
         let h = 1e-6;
@@ -299,15 +292,15 @@ mod tests {
             fd_rho
         );
 
-        // Put rho = -T·P.
+        // Put rho = -T*P.
         let gp = compute_greeks(f, k, t, sigma, r, false);
         let p = put_price(f, k, t, sigma, r);
         assert!((gp.rho - (-t * p) / 100.0).abs() < 1e-12);
     }
 
-    /// Audit M-1: `compute_greeks` must not return `NaN` at `sigma = 0` (ATM is
-    /// the dangerous case: `d1 = 0/0`). This is reachable via the near-expiry
-    /// path of the IV solver, which yields an intrinsic (zero-vol) regime.
+    /// `compute_greeks` must not return `NaN` at `sigma = 0` (ATM is the
+    /// dangerous case: `d1 = 0/0`). This is reachable via the near-expiry path
+    /// of the IV solver, which yields an intrinsic (zero-vol) regime.
     #[test]
     fn greeks_finite_at_zero_sigma() {
         for &is_call in &[true, false] {

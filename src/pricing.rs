@@ -1,7 +1,7 @@
 //! Black-76 closed-form pricing.
 //!
 //! The Black-76 model prices European options on forwards/futures. Given a
-//! forward `F`, strike `K`, time-to-expiry `T` (in years), volatility `σ`,
+//! forward `F`, strike `K`, time-to-expiry `T` (in years), volatility `sigma`,
 //! and risk-free rate `r`:
 //!
 //! ```text
@@ -26,12 +26,12 @@
 //!
 //! # Numerical notes
 //!
-//! Deep in-the-money prices are computed directly as `F·N(d1) − K·N(d2)`, which
+//! Deep in-the-money prices are computed directly as `F*N(d1) - K*N(d2)`, which
 //! subtracts two large near-equal terms, so the small time value can lose a few
-//! digits of relative precision (bounded in the test suite via put-call parity,
-//! audit L-2). For most uses this is immaterial; if you need maximal deep-ITM
-//! precision, price the out-of-the-money wing and recover the in-the-money side
-//! via parity `C = df·(F − K) + P`.
+//! digits of relative precision (bounded in the test suite via put-call parity).
+//! For most uses this is immaterial; if you need maximal deep-ITM precision,
+//! price the out-of-the-money wing and recover the in-the-money side via parity
+//! `C = df*(F - K) + P`.
 
 use statrs::distribution::{Continuous, ContinuousCDF, Normal};
 
@@ -61,10 +61,11 @@ pub fn d1_d2(f: f64, k: f64, t: f64, sigma: f64) -> (f64, f64) {
         f > 0.0 && k > 0.0 && f.is_finite() && k.is_finite(),
         "d1_d2 requires finite F > 0 and K > 0 (got F={f}, K={k})"
     );
-    // `v = σ√T` is the total volatility. Writing d1 as `ln(F/K)/v + v/2` is
-    // algebraically identical to `(ln(F/K) + σ²T/2) / (σ√T)` but never forms
-    // `σ²`, so it does not overflow to NaN for extreme σ (audit L-1). The
-    // fused multiply-add also keeps the rounding tighter (audit P-2).
+    // `v = sigma*sqrt(T)` is the total volatility. Writing d1 as
+    // `ln(F/K)/v + v/2` is algebraically identical to
+    // `(ln(F/K) + sigma^2*T/2) / (sigma*sqrt(T))` but never forms `sigma^2`, so
+    // it does not overflow to NaN for extreme sigma. The fused multiply-add
+    // also keeps the rounding tighter.
     let v = sigma * t.sqrt();
     let d1 = 0.5_f64.mul_add(v, (f / k).ln() / v);
     let d2 = d1 - v;
@@ -81,7 +82,7 @@ pub fn d1_d2(f: f64, k: f64, t: f64, sigma: f64) -> (f64, f64) {
 /// C = df · (F · N(d1) − K · N(d2))   where df = exp(−rT)
 /// ```
 ///
-/// Returns intrinsic value `max(F − K, 0)` when `t ≤ 0` or `sigma ≤ 0`
+/// Returns intrinsic value `max(F - K, 0)` when `t <= 0` or `sigma <= 0`
 /// (no time value).
 ///
 /// # Examples
@@ -109,13 +110,13 @@ pub fn call_price(f: f64, k: f64, t: f64, sigma: f64, r: f64) -> f64 {
 /// P = df · (K · N(−d2) − F · N(−d1))   where df = exp(−rT)
 /// ```
 ///
-/// Returns intrinsic value `max(K − F, 0)` when `t ≤ 0` or `sigma ≤ 0`.
+/// Returns intrinsic value `max(K - F, 0)` when `t <= 0` or `sigma <= 0`.
 ///
 /// # Examples
 ///
 /// ```
 /// use black_76::{call_price, put_price};
-/// // Put-call parity: C − P = df · (F − K)
+/// // Put-call parity: C - P = df * (F - K)
 /// let (f, k, t, sigma, r) = (100.0, 110.0, 0.5, 0.30, 0.05);
 /// let c = call_price(f, k, t, sigma, r);
 /// let p = put_price(f, k, t, sigma, r);
@@ -149,7 +150,7 @@ pub fn price(f: f64, k: f64, t: f64, sigma: f64, r: f64, is_call: bool) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// Vega: sensitivity of price to volatility, in price units per 1.0 absolute
-/// change in σ (i.e. **not** per-1%).
+/// change in sigma (i.e. **not** per-1%).
 ///
 /// ```text
 /// vega = df · F · n(d1) · √T
@@ -158,7 +159,7 @@ pub fn price(f: f64, k: f64, t: f64, sigma: f64, r: f64, is_call: bool) -> f64 {
 /// where `n(d1)` is the standard-normal PDF at `d1`. Vega is the same for
 /// calls and puts.
 ///
-/// Returns `0.0` when `t ≤ 0` or `sigma ≤ 0`.
+/// Returns `0.0` when `t <= 0` or `sigma <= 0`.
 ///
 /// # Examples
 ///
@@ -184,8 +185,8 @@ pub fn vega(f: f64, k: f64, t: f64, sigma: f64, r: f64) -> f64 {
 
 /// Intrinsic value (payoff at expiry).
 ///
-/// - Call: `max(F − K, 0)`
-/// - Put: `max(K − F, 0)`
+/// - Call: `max(F - K, 0)`
+/// - Put: `max(K - F, 0)`
 #[inline]
 #[must_use]
 pub fn intrinsic_value(f: f64, k: f64, is_call: bool) -> f64 {
@@ -201,18 +202,17 @@ mod tests {
     use super::*;
 
     /// ATM call: F=100, K=100, T=1.0, sigma=0.20, r=0.0.
-    /// Per Hull §17.6: d1 = 0.10, d2 = -0.10, C = 100·(N(0.10) − N(−0.10)) = 7.96556746...
+    /// Per Hull §17.6: d1 = 0.10, d2 = -0.10, C = 100*(N(0.10) - N(-0.10)) = 7.96556746...
     #[test]
     fn atm_call_price_known_value() {
         let c = call_price(100.0, 100.0, 1.0, 0.20, 0.0);
-        // Tightened from 1e-2 to 1e-6 per audit LOW-A-01.
         assert!(
             (c - 7.96556746).abs() < 1e-6,
             "ATM call price should match Hull §17.6 to 1e-6, got {c}"
         );
     }
 
-    /// Put-call parity: C − P = df · (F − K) for various strikes.
+    /// Put-call parity: C - P = df * (F - K) for various strikes.
     #[test]
     fn put_call_parity() {
         let f = 100.0_f64;
@@ -294,9 +294,9 @@ mod tests {
         assert!(vega(100.0, 100.0, 1.0, 0.0, 0.0).abs() < f64::EPSILON);
     }
 
-    /// Audit M-4: debug builds assert finite `F > 0 && K > 0` so misuse
-    /// surfaces in tests rather than silently producing NaN/inf. One case per
-    /// arm so a regression dropping any single predicate is caught.
+    /// Debug builds assert finite `F > 0 && K > 0` so misuse surfaces in tests
+    /// rather than silently producing NaN/inf. One case per arm so a regression
+    /// dropping any single predicate is caught.
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "requires finite F > 0 and K > 0")]
@@ -318,11 +318,11 @@ mod tests {
         let _ = d1_d2(f64::NAN, 100.0, 1.0, 0.20);
     }
 
-    /// Release contract (audit M-4): with debug assertions compiled out, the
-    /// pricing path is panic-free and yields NaN/inf for negative or
-    /// non-finite `F`/`K` rather than erroring. Runs under `cargo test
-    /// --release`. (Exact zeros instead yield finite degenerate values — e.g.
-    /// `K = 0` gives `df·F` — so only negative/non-finite inputs are checked.)
+    /// Release contract: with debug assertions compiled out, the pricing path
+    /// is panic-free and yields NaN/inf for negative or non-finite `F`/`K`
+    /// rather than erroring. Runs under `cargo test --release`. (Exact zeros
+    /// instead yield finite degenerate values, e.g. `K = 0` gives `df*F`, so
+    /// only negative/non-finite inputs are checked.)
     #[cfg(not(debug_assertions))]
     #[test]
     fn release_non_finite_inputs_yield_non_finite_no_panic() {

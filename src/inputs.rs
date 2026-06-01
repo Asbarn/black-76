@@ -5,7 +5,7 @@
 //! which is easy to mis-order (`f`/`k`, `t`/`r`). [`BlackInputs`] and
 //! [`IvQuery`] name every field, so call sites are self-documenting and an
 //! argument swap becomes a field name rather than a silent wrong answer. The
-//! free functions remain available and are not deprecated — this is a thin,
+//! free functions remain available and are not deprecated; this is a thin,
 //! zero-cost convenience layer over them.
 
 use crate::config::SolverConfig;
@@ -17,7 +17,7 @@ use crate::types::{InstrumentGreeks, SolverResult};
 /// Named inputs for Black-76 pricing and Greeks: forward `f`, strike `k`,
 /// time-to-expiry `t` (in years), volatility `sigma`, and rate `r`.
 ///
-/// A typo-resistant alternative to the positional free functions — every field
+/// A typo-resistant alternative to the positional free functions: every field
 /// is named, so `f`/`k` and `t`/`r` cannot be silently swapped.
 ///
 /// ```
@@ -92,7 +92,7 @@ impl BlackInputs {
         compute_greeks(self.f, self.k, self.t, self.sigma, self.r, is_call)
     }
 
-    /// Intrinsic value: `max(F − K, 0)` (call) or `max(K − F, 0)` (put).
+    /// Intrinsic value: `max(F - K, 0)` (call) or `max(K - F, 0)` (put).
     #[must_use]
     pub fn intrinsic_value(&self, is_call: bool) -> f64 {
         intrinsic_value(self.f, self.k, is_call)
@@ -145,7 +145,7 @@ impl IvQuery {
     }
 
     /// Solve for implied volatility. Like [`solve_iv`], this returns a
-    /// [`SolverResult`] — **check `converged` before consuming `iv`** (it is
+    /// [`SolverResult`]: **check `converged` before consuming `iv`** (it is
     /// `NaN` on every non-converged path).
     #[must_use]
     pub fn solve(&self, config: &SolverConfig) -> SolverResult {

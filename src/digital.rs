@@ -6,10 +6,10 @@
 //! 1. **Call-spread replication** (primary): a tight call spread centered on
 //!    the target strike, priced with the smile's interpolated (skew-aware) IV
 //!    at each leg. The discounted price difference is rescaled by `exp(rT)` to
-//!    recover the undiscounted probability (see HIGH-A-02), and centered on the
-//!    target to avoid the strike-location bias of audit M-2.
+//!    recover the undiscounted probability, and centered on the target to
+//!    avoid a strike-location bias.
 //! 2. **N(d2)** (baseline): closed-form Black-76 risk-neutral probability
-//!    with skew adjustment (`strike_iv − atm_iv`). Always available when
+//!    with skew adjustment (`strike_iv - atm_iv`). Always available when
 //!    the smile can interpolate at the target strike.
 //!
 //! Both are computed and their disagreement is reported for downstream
@@ -67,7 +67,7 @@ pub struct CallSpreadResult {
 pub struct Nd2Result {
     /// Extracted probability `P_Q(F_T > K)` via `N(d2)`.
     pub probability: f64,
-    /// Skew adjustment: `strike_iv − atm_iv` (0 if ATM IV unavailable).
+    /// Skew adjustment: `strike_iv - atm_iv` (0 if ATM IV unavailable).
     pub skew_adjustment: f64,
 }
 
@@ -86,10 +86,10 @@ pub struct ProbabilityExtraction {
     /// `N(d2)` result (present whenever IV interpolation succeeds at the
     /// target strike).
     pub nd2: Nd2Result,
-    /// Absolute disagreement `|call_spread.probability − nd2.probability|`
+    /// Absolute disagreement `|call_spread.probability - nd2.probability|`
     /// when both methods are present; otherwise zero.
     pub method_disagreement: f64,
-    /// Skew adjustment from N(d2) (`strike_iv − atm_iv`).
+    /// Skew adjustment from N(d2) (`strike_iv - atm_iv`).
     pub skew_adjustment: f64,
 }
 
@@ -111,27 +111,27 @@ pub enum ProbabilityMethod {
 /// Compute `P_Q(F_T > target_strike)` via call-spread replication, centered on
 /// the target strike.
 ///
-/// Steps out symmetrically from `target_strike` by `ε` (the local observed
+/// Steps out symmetrically from `target_strike` by `eps` (the local observed
 /// half-spacing, clamped to keep both legs inside the smile), prices a call at
-/// `target ± ε` using the IV interpolated at each leg, and recovers the
+/// `target +/- eps` using the IV interpolated at each leg, and recovers the
 /// risk-neutral probability from the discount-corrected central difference:
 ///
 /// ```text
 /// P_Q(F_T > K) ≈ (c(K − ε) − c(K + ε)) / (2ε · exp(−rT))
 /// ```
 ///
-/// Centering on the target — rather than on the midpoint of two observed
-/// strikes — removes the strike-location bias of audit M-2.
+/// Centering on the target (rather than on the midpoint of two observed
+/// strikes) removes a strike-location bias.
 ///
 /// Returns `None` when:
 /// - the smile cannot bracket `target_strike` (target outside observed range);
-/// - the local observed half-spacing exceeds `max_epsilon` (smile too sparse —
+/// - the local observed half-spacing exceeds `max_epsilon` (smile too sparse,
 ///   the caller falls back to `N(d2)`);
 /// - IV interpolation fails at either leg;
-/// - the usable step `ε` is non-positive;
-/// - the raw probability falls outside `[0, 1]` — a smile arbitrage (e.g.
-///   `c(K − ε) < c(K + ε)`) reported as unavailable rather than silently
-///   clamped (audit M-2).
+/// - the usable step `eps` is non-positive;
+/// - the raw probability falls outside `[0, 1]`, a smile arbitrage (e.g.
+///   `c(K - eps) < c(K + eps)`) reported as unavailable rather than silently
+///   clamped.
 fn call_spread_probability(
     target_strike: f64,
     smile: &VolSmile,
@@ -151,10 +151,10 @@ fn call_spread_probability(
         return None;
     }
 
-    // Center the difference on the target (audit M-2): the central difference
-    // estimates the CDF at the MIDPOINT of its two legs, so evaluating at
-    // observed grid strikes returns P(F > bracket-midpoint), not P(F > target).
-    // Keep both legs inside the interpolation range.
+    // Center the difference on the target: the central difference estimates the
+    // CDF at the MIDPOINT of its two legs, so evaluating at observed grid
+    // strikes returns P(F > bracket-midpoint), not P(F > target). Keep both
+    // legs inside the interpolation range.
     let first = smile.points.first()?.strike;
     let last = smile.points.last()?.strike;
     let epsilon = half_spacing
@@ -173,12 +173,12 @@ fn call_spread_probability(
     let c_low = call_price(forward, k_low, time_to_expiry, iv_low, rate);
     let c_high = call_price(forward, k_high, time_to_expiry, iv_high, rate);
 
-    // HIGH-A-02: undo discounting (the `/ df`) so the result is a probability,
-    // not a discounted-probability proxy.
+    // Undo discounting (the `/ df`) so the result is a probability, not a
+    // discounted-probability proxy.
     let df = (-rate * time_to_expiry).exp();
     let raw_prob = (c_low - c_high) / (2.0 * epsilon) / df;
 
-    // Audit M-2: do NOT silently clamp. A raw probability outside [0, 1] (or
+    // Do NOT silently clamp. A raw probability outside [0, 1] (or
     // `c_low < c_high`) signals a smile arbitrage or numerical breakdown;
     // report it as unavailable rather than returning a plausible-looking
     // 0.0 / 1.0. A tiny float-noise overshoot is tolerated, then clamped.
@@ -201,7 +201,7 @@ fn call_spread_probability(
 
 /// Compute `P_Q(F_T > strike)` via Black-76 `N(d2)`.
 ///
-/// The skew adjustment is `strike_iv − atm_iv`; pass `None` for `atm_iv`
+/// The skew adjustment is `strike_iv - atm_iv`; pass `None` for `atm_iv`
 /// to suppress it.
 fn nd2_probability(
     forward: f64,
@@ -246,8 +246,8 @@ pub fn extract_probabilities(
     rate: f64,
     max_epsilon: f64,
 ) -> Option<ProbabilityExtraction> {
-    // At/after expiry `d1_d2` forms `v = σ√T = 0`, so `N(d2)` is NaN at the
-    // money (0/0) and ±inf-driven 0/1 off the money — never a usable
+    // At/after expiry `d1_d2` forms `v = sigma*sqrt(T) = 0`, so `N(d2)` is NaN
+    // at the money (0/0) and +/-inf-driven 0/1 off the money, never a usable
     // probability. Mirror the `t <= 0` intrinsic guards in `pricing`/`greeks`
     // by reporting the result as unavailable rather than leaking NaN through
     // `nd2.probability` / `method_disagreement`.
@@ -427,9 +427,9 @@ mod tests {
         assert!(nd2.skew_adjustment.abs() < f64::EPSILON);
     }
 
-    /// HIGH-A-02 regression. Without the `/ df` rescaling the ATM call-spread
-    /// probability at `r = 5%` would settle near `0.5 · exp(−0.05) ≈ 0.476`
-    /// — visibly biased. After the fix it must remain near `0.5`.
+    /// Without the `/ df` rescaling the ATM call-spread probability at `r = 5%`
+    /// would settle near `0.5 * exp(-0.05) ~= 0.476`, visibly biased; it must
+    /// remain near `0.5`.
     #[test]
     fn call_spread_with_nonzero_rate() {
         let smile = flat_smile(0.20);
@@ -454,10 +454,9 @@ mod tests {
         );
     }
 
-    /// Audit M-2: for an off-grid target the call spread must estimate
-    /// `P(F > target)`, not `P(F > bracket-midpoint)`. On strikes
-    /// {90,95,100,105,110}, target 96 brackets to (95,100) whose midpoint is
-    /// 97.5 — the old code located the probability there.
+    /// For an off-grid target the call spread must estimate `P(F > target)`,
+    /// not `P(F > bracket-midpoint)`. On strikes {90,95,100,105,110}, target 96
+    /// brackets to (95,100) whose midpoint is 97.5, not the target.
     #[test]
     fn call_spread_recenters_on_off_grid_target() {
         let smile = flat_smile(0.20);
@@ -485,9 +484,9 @@ mod tests {
         assert!(((cs.k_lower + cs.k_upper) / 2.0 - target).abs() < 1e-9);
     }
 
-    /// Audit M-2: an arbitraging smile (extreme wing IV makes the higher-strike
-    /// call worth more than the lower-strike one) must yield `None`, not a
-    /// silently clamped `0.0`.
+    /// An arbitraging smile (extreme wing IV makes the higher-strike call worth
+    /// more than the lower-strike one) must yield `None`, not a silently
+    /// clamped `0.0`.
     #[test]
     fn call_spread_rejects_arbitraging_smile() {
         let config = VolSurfaceConfig::default();

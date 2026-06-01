@@ -18,11 +18,11 @@ fn main() {
     let df = (-rate * time_to_expiry).exp();
 
     println!("Black-76 put-call parity check");
-    println!("F = {forward:.2}  T = {time_to_expiry:.2}  σ = {sigma:.2}  r = {rate:.2}");
+    println!("F = {forward:.2}  T = {time_to_expiry:.2}  sigma = {sigma:.2}  r = {rate:.2}");
     println!("---------------------------------------------------------------");
     println!(
         "{:>10} {:>14} {:>14} {:>14} {:>14}",
-        "K", "C", "P", "C − P", "df · (F − K)"
+        "K", "C", "P", "C - P", "df * (F - K)"
     );
 
     let strikes = [70.0_f64, 85.0, 95.0, 100.0, 105.0, 115.0, 130.0];

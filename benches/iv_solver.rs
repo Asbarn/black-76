@@ -1,6 +1,6 @@
 //! Microbenchmarks for the implied-volatility solver.
 //!
-//! Covers the common-path (NR converges) and fallback-path (deep OTM →
+//! Covers the common-path (NR converges) and fallback-path (deep OTM ->
 //! Brent) scenarios. The market prices are pre-synthesised from a known
 //! sigma so the loop body only times the solve, not pricing.
 //!

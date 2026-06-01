@@ -2,35 +2,36 @@
 //!
 //! Two kinds of expected value appear in [`CASES`]:
 //!
-//! - **External reference** — the row's expected value comes from a
+//! - **External reference**: the row's expected value comes from a
 //!   published source (Hull's textbook). A drift here means the math is
 //!   wrong, not just changed.
-//! - **Regression lock** — the row's expected value was computed once by
+//! - **Regression lock**: the row's expected value was computed once by
 //!   this library at v0.1.0 and committed verbatim. A drift here means
 //!   *something changed* between releases; investigate before bumping the
 //!   tolerance.
 //!
-//! Put prices are cross-checked via put-call parity (`P = C − exp(−rT) ·
-//! (F − K)`). Parity is a structural identity, so a put-side drift caught
+//! Put prices are cross-checked via put-call parity (`P = C - exp(-rT) *
+//! (F - K)`). Parity is a structural identity, so a put-side drift caught
 //! by [`golden_put_prices_via_parity`] points to a regression in the put
 //! pricing path independently of the call values above.
 //!
-//! **Precision caveat.** Every expected value here was produced by this crate
-//! (via `statrs`'s erf), so the `1e-12` relative bound is primarily a
+//! **Precision caveat.** The regression-lock rows were produced by this crate
+//! (via `statrs`'s erf), so for those the `1e-12` relative bound is primarily a
 //! *regression lock against `statrs`* rather than an independent-accuracy
-//! certificate — `statrs`'s erf is not itself accurate to `1e-12` versus an
-//! arbitrary reference. The rows labeled "independent erf reference" were
-//! reproduced with Python's `math.erf` and currently agree with `statrs` to
-//! ~`1e-15`, so they do cross-validate the model today; a future `statrs` erf
-//! change of order `1e-10` would, however, slip past this bound unless those
-//! reference values are recomputed independently. The bound is exercised on
+//! certificate; `statrs`'s erf is not itself accurate to `1e-12` versus an
+//! arbitrary reference. The rows labeled "independent erf reference" and
+//! "py_vollib" were computed by external implementations (Python's `math.erf`
+//! and `py_vollib` 1.0.12) and currently agree with `statrs` to ~`1e-15`, so
+//! they cross-validate the model today; a future `statrs` erf change of order
+//! `1e-10` would, however, slip past this bound unless those reference values
+//! are recomputed independently. The bound is exercised on
 //! `x86_64-unknown-linux-gnu` in CI; treat it as certified there.
 
 use black_76::{call_price, put_price};
 
-/// `(F, K, T, σ, r, expected_C, kind)`. `kind` is documentation-only.
+/// `(F, K, T, sigma, r, expected_C, kind)`. `kind` is documentation-only.
 const CASES: &[(f64, f64, f64, f64, f64, f64, &str)] = &[
-    // Hull, *Options, Futures, and Other Derivatives*, 10th ed., §17.6 — the
+    // Hull, *Options, Futures, and Other Derivatives*, 10th ed., §17.6, the
     // canonical ATM Black-76 example.
     (
         100.0,
@@ -41,7 +42,7 @@ const CASES: &[(f64, f64, f64, f64, f64, f64, &str)] = &[
         7.965_567_455_405_804,
         "external: Hull §17.6 ATM, r=0",
     ),
-    // Same point with r = 5%; cross-validated by C(r=r) = C(r=0) · exp(−rT)
+    // Same point with r = 5%; cross-validated by C(r=r) = C(r=0) * exp(-rT)
     // at F = K (rate enters only through df in Black-76).
     (
         100.0,
@@ -112,6 +113,45 @@ const CASES: &[(f64, f64, f64, f64, f64, f64, &str)] = &[
         0.269_288_257_583_031_54,
         "external: independent erf reference",
     ),
+    // External references from py_vollib 1.0.12 (`py_vollib.black`), an
+    // independent Python implementation. A drift here means the math is wrong,
+    // not merely changed.
+    (
+        100.0,
+        90.0,
+        0.50,
+        0.25,
+        0.02,
+        12.713_387_010_309_656,
+        "external: py_vollib 1.0.12 (ITM call)",
+    ),
+    (
+        4000.0,
+        4200.0,
+        0.25,
+        0.55,
+        0.01,
+        354.499_423_624_769_07,
+        "external: py_vollib 1.0.12 (OTM, large forward)",
+    ),
+    (
+        20.0,
+        25.0,
+        1.50,
+        0.40,
+        0.03,
+        2.186_164_818_549_399_6,
+        "external: py_vollib 1.0.12 (OTM, long-dated)",
+    ),
+    (
+        100.0,
+        100.0,
+        2.00,
+        0.15,
+        0.04,
+        7.797_566_235_561_613_5,
+        "external: py_vollib 1.0.12 (ATM, low vol)",
+    ),
 ];
 
 #[test]
@@ -124,14 +164,14 @@ fn golden_call_prices() {
         let bound = 1e-12 * (1.0 + expected.abs());
         assert!(
             err < bound,
-            "{kind}: F={f}, K={k}, T={t}, σ={sigma}, r={r} — expected {expected}, got {actual}, |err|={err:.2e}",
+            "{kind}: F={f}, K={k}, T={t}, sigma={sigma}, r={r}, expected {expected}, got {actual}, |err|={err:.2e}",
         );
     }
 }
 
 #[test]
 fn golden_put_prices_via_parity() {
-    // Verify the put pricing path through `P = C − df·(F − K)`. Catches an
+    // Verify the put pricing path through `P = C - df*(F - K)`. Catches an
     // independent regression in the put branch of `pricing.rs` even if the
     // call branch matches its golden value above.
     for &(f, k, t, sigma, r, _expected_c, kind) in CASES {
@@ -143,7 +183,7 @@ fn golden_put_prices_via_parity() {
         let bound = 1e-12 * (1.0 + f.abs());
         assert!(
             err < bound,
-            "{kind}: put violates parity — P={actual_p}, parity_P={parity_p}, |err|={err:.2e}",
+            "{kind}: put violates parity: P={actual_p}, parity_P={parity_p}, |err|={err:.2e}",
         );
     }
 }

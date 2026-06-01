@@ -10,10 +10,10 @@
 //! # Arbitrage
 //!
 //! Linear-in-strike interpolation and flat-wing extrapolation are **not**
-//! guaranteed arbitrage-free: the implied risk-neutral density (`∂²C/∂K²`, per
-//! Breeden-Litzenberger) can go negative between nodes, so digitals derived
+//! guaranteed arbitrage-free: the implied risk-neutral density (`d^2 C / dK^2`,
+//! per Breeden-Litzenberger) can go negative between nodes, so digitals derived
 //! from this smile may be locally inconsistent. This is a lightweight smoothing
-//! utility — for arbitrage-free surfaces use a total-variance or SVI/SABR
+//! utility; for arbitrage-free surfaces use a total-variance or SVI/SABR
 //! parameterization (Gatheral, *The Volatility Surface*) or arbitrage-free
 //! smoothing (Fengler 2009).
 //!
@@ -174,14 +174,14 @@ impl SmilePoint {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum SmileQuality {
-    /// `good_strike_count` or more usable strikes — reliable interpolation.
+    /// `good_strike_count` or more usable strikes; reliable interpolation.
     Good,
-    /// Between `min_usable_strikes` and `good_strike_count - 1` usable strikes
-    /// — minimum for interpolation.
+    /// Between `min_usable_strikes` and `good_strike_count - 1` usable strikes;
+    /// the minimum for interpolation.
     Minimum,
-    /// Fewer than `min_usable_strikes` — falls back to flat ATM vol.
+    /// Fewer than `min_usable_strikes`; falls back to flat ATM vol.
     Degraded,
-    /// Zero usable strikes — no data.
+    /// Zero usable strikes; no data.
     Empty,
 }
 
@@ -194,7 +194,7 @@ pub enum SmileQuality {
 /// Points are always sorted by strike ascending. Quality filtering excludes
 /// strikes with excessive IV bid-ask spread or non-positive IV.
 ///
-/// The `expiry` field is a free-form label — pass `None` if you don't track
+/// The `expiry` field is a free-form label; pass `None` if you don't track
 /// expiry timestamps, or `Some(unix_seconds)` if you do. The smile math
 /// itself does not consume the expiry value.
 #[derive(Debug, Clone, PartialEq)]
@@ -234,8 +234,8 @@ impl VolSmile {
             // `iv <= 0.0` test below (NaN comparisons are false), survives the
             // `partial_cmp(..).unwrap_or(Equal)` sort as "equal" (leaving the
             // points vec unsorted), and then poisons `interpolate` /
-            // `nearest_bracket` — both of which assume a sorted slice — with
-            // NaN. A non-finite IV is equally unusable. Drop both so the
+            // `nearest_bracket` (both assume a sorted slice) with NaN. A
+            // non-finite IV is equally unusable. Drop both so the
             // sorted-ascending invariant always holds.
             if !p.strike.is_finite() || !p.iv.is_finite() {
                 excluded.push((p.strike, "non-finite strike/IV".to_string()));
@@ -393,7 +393,7 @@ impl VolSmile {
 
         // Scale-relative equality so an on-grid strike is recognized at crypto
         // magnitudes (e.g. 100_000), where an absolute `f64::EPSILON` never
-        // matches a strike that was computed rather than typed (audit L-3).
+        // matches a strike that was computed rather than typed.
         let strike_eq_tol = 1e-9 * target_strike.abs().max(1.0);
 
         if idx < self.points.len()
@@ -658,8 +658,8 @@ mod tests {
         let smile = make_good_smile(); // strikes 90_000 ..= 110_000
         // A target a hair below the 100_000 node (as if computed with rounding)
         // is recognized as the on-grid strike thanks to the scale-relative
-        // tolerance (audit L-3); an absolute f64::EPSILON would miss it and
-        // return (95_000, 100_000) instead.
+        // tolerance; an absolute f64::EPSILON would miss it and return
+        // (95_000, 100_000) instead.
         let (lower, upper) = smile.nearest_bracket(100_000.0 - 1e-5).unwrap();
         assert!((lower - 95_000.0).abs() < f64::EPSILON);
         assert!((upper - 105_000.0).abs() < f64::EPSILON);

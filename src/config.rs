@@ -33,14 +33,13 @@ pub struct SolverConfig {
     /// in volatility space (see [`iv_tolerance`](Self::iv_tolerance)).
     pub price_tolerance: f64,
     /// Volatility-space convergence tolerance. The solver converges when the
-    /// Newton step (or the Brent bracket width) in `σ` falls below this value.
-    /// Deciding convergence in `σ`-space is scale-free — it behaves the same
-    /// whether the forward is `1.0` or `100_000.0`, unlike an absolute price
-    /// tolerance.
+    /// Newton step (or the Brent bracket width) in `sigma` falls below this
+    /// value. Deciding convergence in `sigma`-space behaves the same whether the
+    /// forward is `1.0` or `100_000.0`, unlike an absolute price tolerance.
     pub iv_tolerance: f64,
     /// Minimum vega to continue Newton-Raphson iterations. Below this, the
-    /// solver falls back to Brent's method to avoid the explosive step
-    /// `Δsigma = (price - target) / vega` when vega → 0 (deep OTM, near expiry).
+    /// solver falls back to Brent's method to avoid the explosive Newton step
+    /// `(price - target) / vega` as vega -> 0 (deep OTM, near expiry).
     pub vega_floor: f64,
     /// Minimum allowed IV (annualized). The solver clamps every NR step to
     /// `[iv_min, iv_max]`. Default 0.01 (1%).
@@ -51,7 +50,7 @@ pub struct SolverConfig {
     pub brent_max_iterations: u32,
     /// Near-expiry cutoff in hours. Below this, the solver bypasses NR/Brent
     /// and returns `iv = NaN`, `converged = false`,
-    /// `status = SolverStatus::NearExpiryIntrinsic` — price the option
+    /// `status = SolverStatus::NearExpiryIntrinsic`; price the option
     /// intrinsically yourself rather than implying a volatility.
     pub near_expiry_cutoff_hours: f64,
 }

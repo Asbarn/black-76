@@ -17,7 +17,7 @@ fn main() {
     let call = compute_greeks(forward, strike, time_to_expiry, sigma, rate, true);
     let put = compute_greeks(forward, strike, time_to_expiry, sigma, rate, false);
 
-    println!("Greeks at F={forward} K={strike} T={time_to_expiry} σ={sigma} r={rate}");
+    println!("Greeks at F={forward} K={strike} T={time_to_expiry} sigma={sigma} r={rate}");
     println!("-----------------------------------------------------------");
     println!("            {:>14} {:>14}", "Call", "Put");
     println!("delta       {:>14.6} {:>14.6}", call.delta, put.delta);

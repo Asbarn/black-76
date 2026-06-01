@@ -21,14 +21,14 @@ fn main() {
     println!("F = {forward:.4}");
     println!("K = {strike:.4}");
     println!("T = {time_to_expiry:.4} years");
-    println!("σ = {sigma:.4}");
+    println!("sigma = {sigma:.4}");
     println!("r = {rate:.4}");
     println!();
     println!("Call price: {c:.6}");
     println!("Put price:  {p:.6}");
-    println!("C − P:      {:.6}", c - p);
+    println!("C - P:      {:.6}", c - p);
     println!(
-        "F − K:      {:.6}  (put-call parity at r=0)",
+        "F - K:      {:.6}  (put-call parity at r=0)",
         forward - strike
     );
 }
