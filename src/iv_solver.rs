@@ -18,6 +18,9 @@
 //!
 //! ## Edge cases ([`SolverStatus`])
 //!
+//! - **Non-finite input** (any of `market_price`, `f`, `k`, `t`, `r` is
+//!   `NaN`/`inf`): `iv = NaN`, `converged = false`,
+//!   [`SolverStatus::InvalidInput`] — validate inputs before calling.
 //! - **Near-expiry** (`t < near_expiry_cutoff_hours`): `iv = NaN`,
 //!   `converged = false`, [`SolverStatus::NearExpiryIntrinsic`] — price the
 //!   option intrinsically yourself.
@@ -259,6 +262,27 @@ pub fn solve_iv(
     is_call: bool,
     config: &SolverConfig,
 ) -> SolverResult {
+    // 0. Non-finite inputs: bail out before iterating. A NaN objective slips
+    //    every comparison gate below — `fa * fb > 0.0` is false for NaN, the
+    //    vega-floor and convergence tests never fire — so the solver would
+    //    otherwise burn its full NR + Brent budget and report a misleading
+    //    `MaxIterations`. Report the real cause instead.
+    if !(market_price.is_finite()
+        && f.is_finite()
+        && k.is_finite()
+        && t.is_finite()
+        && r.is_finite())
+    {
+        return SolverResult {
+            iv: f64::NAN,
+            method: SolverMethod::NewtonRaphson,
+            iterations: 0,
+            converged: false,
+            status: SolverStatus::InvalidInput,
+            residual: f64::NAN,
+        };
+    }
+
     // 1. Near-expiry cutoff: bypass solver and return intrinsic-pricing sentinel.
     let near_expiry_cutoff_years = config.near_expiry_cutoff_hours / HOURS_PER_YEAR;
     if t <= 0.0 || t < near_expiry_cutoff_years {
@@ -324,13 +348,20 @@ pub fn solve_iv(
         // `iv_tolerance` of the root. Scale-free, and cannot report a flat
         // price region as converged (audit H-2).
         if step.abs() < config.iv_tolerance {
+            // Take the final (sub-tolerance) step before returning. Newton is
+            // quadratic near the root, so applying it lands ~step² from the
+            // root instead of leaving the ~step residual on the table — for
+            // one extra price evaluation. `residual` is recomputed at the
+            // returned σ so it stays consistent with `iv`.
+            let sigma_next = (sigma - step).clamp(config.iv_min, config.iv_max);
+            let residual = (pricing::price(f, k, t, sigma_next, r, is_call) - market_price).abs();
             return SolverResult {
-                iv: sigma,
+                iv: sigma_next,
                 method: SolverMethod::NewtonRaphson,
                 iterations: i + 1,
                 converged: true,
                 status: SolverStatus::Converged,
-                residual: diff.abs(),
+                residual,
             };
         }
 
@@ -342,17 +373,18 @@ pub fn solve_iv(
     brent_solve(market_price, f, k, t, r, is_call, config)
 }
 
-/// Solves bid, ask, and mid IV independently.
+/// Solves bid, mid, and ask IV independently.
 ///
 /// Any individual solve failure does not block the others.
 ///
-/// Returns `(bid_result, ask_result, mid_result)`.
+/// Returns `(bid_result, mid_result, ask_result)` — quote order, with `mid`
+/// between `bid` and `ask`.
 #[must_use]
-#[allow(clippy::too_many_arguments)] // bid/ask/mid + 4 market inputs + is_call + config — natural arity
+#[allow(clippy::too_many_arguments)] // bid/mid/ask + 4 market inputs + is_call + config — natural arity
 pub fn solve_iv_triple(
     bid_price: f64,
-    ask_price: f64,
     mid_price: f64,
+    ask_price: f64,
     f: f64,
     k: f64,
     t: f64,
@@ -361,9 +393,9 @@ pub fn solve_iv_triple(
     config: &SolverConfig,
 ) -> (SolverResult, SolverResult, SolverResult) {
     let bid_result = solve_iv(bid_price, f, k, t, r, is_call, config);
-    let ask_result = solve_iv(ask_price, f, k, t, r, is_call, config);
     let mid_result = solve_iv(mid_price, f, k, t, r, is_call, config);
-    (bid_result, ask_result, mid_result)
+    let ask_result = solve_iv(ask_price, f, k, t, r, is_call, config);
+    (bid_result, mid_result, ask_result)
 }
 
 #[cfg(test)]
@@ -509,6 +541,32 @@ mod tests {
         assert_eq!(result.status, SolverStatus::NonPositivePrice);
     }
 
+    /// Non-finite inputs short-circuit to `InvalidInput` (iterations == 0)
+    /// rather than burning the full NR + Brent budget on a NaN objective and
+    /// reporting a misleading `MaxIterations`.
+    #[test]
+    fn non_finite_inputs_return_invalid_input() {
+        let config = default_config();
+        let bad_inputs = [
+            (f64::NAN, 100.0, 100.0, 1.0, 0.0),      // market price
+            (5.0, f64::NAN, 100.0, 1.0, 0.0),        // forward
+            (5.0, 100.0, f64::NAN, 1.0, 0.0),        // strike
+            (5.0, 100.0, 100.0, f64::INFINITY, 0.0), // time
+            (5.0, 100.0, 100.0, 1.0, f64::NAN),      // rate
+        ];
+        for (mp, f, k, t, r) in bad_inputs {
+            let result = solve_iv(mp, f, k, t, r, true, &config);
+            assert_eq!(
+                result.status,
+                SolverStatus::InvalidInput,
+                "inputs {mp},{f},{k},{t},{r}"
+            );
+            assert!(!result.converged);
+            assert!(result.iv.is_nan());
+            assert_eq!(result.iterations, 0);
+        }
+    }
+
     /// Audit CRIT-A-01 regression: when the true IV lies above `iv_max`, the
     /// price is unattainable in `[iv_min, iv_max]`, so Brent finds no sign
     /// change. The solver must return `iv = NaN`, `converged = false`, and
@@ -526,6 +584,43 @@ mod tests {
         assert!(result.iv.is_nan());
         assert!(!result.converged);
         assert_eq!(result.status, SolverStatus::NoBracketInRange);
+    }
+
+    /// `MaxIterations`: force Brent (zero NR budget) with a one-iteration
+    /// Brent budget on a wide bracket that holds a real root, so the σ-bracket
+    /// never tightens below `iv_tolerance`. Must return `iv = NaN`.
+    #[test]
+    fn brent_exhausts_budget_returns_max_iterations() {
+        let config = SolverConfig::builder()
+            .nr_max_iterations(0) // skip NR → straight to Brent
+            .brent_max_iterations(1) // one step can't tighten [0.01, 5.0] to iv_tolerance
+            .build();
+        let market = call_price(100.0, 100.0, 1.0, 0.20, 0.0); // root at σ=0.20 ∈ [iv_min, iv_max]
+        let result = solve_iv(market, 100.0, 100.0, 1.0, 0.0, true, &config);
+        assert_eq!(result.status, SolverStatus::MaxIterations);
+        assert!(!result.converged);
+        assert!(result.iv.is_nan());
+    }
+
+    /// `NotIdentifiable`: with `iv_tolerance = 0` the σ-bracket can never meet
+    /// the tolerance, so Brent collapses it to machine epsilon; with
+    /// `price_tolerance = 0` the (tiny, non-zero) residual at collapse fails
+    /// the price sanity gate, so the root is reported as non-identifiable
+    /// rather than converged. Must return `iv = NaN`.
+    #[test]
+    fn brent_bracket_collapse_returns_not_identifiable() {
+        let config = SolverConfig::builder()
+            .nr_max_iterations(0)
+            .iv_tolerance(0.0)
+            .price_tolerance(0.0)
+            .build();
+        // A market price not bit-equal to any clean call_price output, so the
+        // residual at bracket collapse is nonzero.
+        let market = 7.9_f64;
+        let result = solve_iv(market, 100.0, 100.0, 1.0, 0.0, true, &config);
+        assert_eq!(result.status, SolverStatus::NotIdentifiable);
+        assert!(!result.converged);
+        assert!(result.iv.is_nan());
     }
 
     #[test]
@@ -567,15 +662,19 @@ mod tests {
         let true_sigma = 0.60;
         let market = call_price(f, k, t, true_sigma, 0.0);
         let result = solve_iv(market, f, k, t, 0.0, true, &config);
-        if result.converged {
-            assert!(
-                (result.iv - true_sigma).abs() < 1e-3,
-                "converged to the wrong σ: got {}, true {true_sigma}",
-                result.iv,
-            );
-        } else {
-            assert!(result.iv.is_nan(), "non-converged result must be NaN");
-        }
+        // This well-posed deep-OTM point does converge (via Brent); the H-2
+        // contract is that it recovers the *generating* σ rather than reporting
+        // a flat endpoint. The genuine non-identifiable / NaN path is exercised
+        // by `brent_bracket_collapse_returns_not_identifiable`.
+        assert!(
+            result.converged,
+            "deep-OTM point should converge: {result:?}"
+        );
+        assert!(
+            (result.iv - true_sigma).abs() < 1e-3,
+            "converged to the wrong σ: got {}, true {true_sigma}",
+            result.iv,
+        );
     }
 
     #[test]
@@ -595,8 +694,8 @@ mod tests {
         let ask = call_price(100.0, 100.0, 1.0, 0.22, 0.0);
         let mid = call_price(100.0, 100.0, 1.0, 0.20, 0.0);
 
-        let (bid_r, ask_r, mid_r) =
-            solve_iv_triple(bid, ask, mid, 100.0, 100.0, 1.0, 0.0, true, &config);
+        let (bid_r, mid_r, ask_r) =
+            solve_iv_triple(bid, mid, ask, 100.0, 100.0, 1.0, 0.0, true, &config);
 
         assert!(bid_r.converged && ask_r.converged && mid_r.converged);
         assert!((bid_r.iv - 0.18).abs() < 1e-6);
@@ -609,8 +708,8 @@ mod tests {
         let config = default_config();
         let ask = call_price(100.0, 100.0, 1.0, 0.22, 0.0);
         let mid = call_price(100.0, 100.0, 1.0, 0.20, 0.0);
-        let (bid_r, ask_r, mid_r) =
-            solve_iv_triple(0.0, ask, mid, 100.0, 100.0, 1.0, 0.0, true, &config);
+        let (bid_r, mid_r, ask_r) =
+            solve_iv_triple(0.0, mid, ask, 100.0, 100.0, 1.0, 0.0, true, &config);
         assert!(!bid_r.converged);
         assert!(ask_r.converged);
         assert!(mid_r.converged);

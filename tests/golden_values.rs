@@ -14,6 +14,17 @@
 //! (F − K)`). Parity is a structural identity, so a put-side drift caught
 //! by [`golden_put_prices_via_parity`] points to a regression in the put
 //! pricing path independently of the call values above.
+//!
+//! **Precision caveat.** Every expected value here was produced by this crate
+//! (via `statrs`'s erf), so the `1e-12` relative bound is primarily a
+//! *regression lock against `statrs`* rather than an independent-accuracy
+//! certificate — `statrs`'s erf is not itself accurate to `1e-12` versus an
+//! arbitrary reference. The rows labeled "independent erf reference" were
+//! reproduced with Python's `math.erf` and currently agree with `statrs` to
+//! ~`1e-15`, so they do cross-validate the model today; a future `statrs` erf
+//! change of order `1e-10` would, however, slip past this bound unless those
+//! reference values are recomputed independently. The bound is exercised on
+//! `x86_64-unknown-linux-gnu` in CI; treat it as certified there.
 
 use black_76::{call_price, put_price};
 

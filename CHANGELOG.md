@@ -7,113 +7,108 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+_Nothing yet._
 
-- `SolverStatus` enum on `SolverResult` — the precise reason behind a
-  (non-)convergence: `Converged`, `NearExpiryIntrinsic`, `NonPositivePrice`,
-  `BelowIntrinsic`, `NoBracketInRange`, `NotIdentifiable`, `MaxIterations`.
-- Gamma and rho on `InstrumentGreeks` (gamma per unit forward; rho per 1%).
-- `BlackInputs` and `IvQuery` — typo-resistant, named-field wrappers over the
-  positional free functions, with `const` constructors.
-- `SolverConfig::iv_tolerance` — volatility-space convergence tolerance.
-- `#![forbid(unsafe_code)]`, `#[must_use]` on pure functions and builders, and
-  `const fn` builder setters.
-
-### Changed
-
-- **Convergence is now decided in volatility space** (`|Δσ| < iv_tolerance`
-  for Newton-Raphson; bracket width in `σ` for Brent), not on an absolute
-  price residual. This removes false `converged = true` results in vega-weak
-  or large-forward regimes and is scale-free (audit **H-2**). The price
-  residual is still reported.
-- **`solve_iv` returns `iv = f64::NAN` on every non-converged path** and sets
-  `converged = false` for the near-expiry case (previously `iv = 0.0,
-  converged = true`, and `iv = iv_min` for infeasible prices). The documented
-  NaN/`converged` contract is now honored everywhere (audit **H-1**).
-- `compute_greeks` guards `sigma <= 0` (mirroring `pricing`), returning the
-  intrinsic delta and zero higher-order Greeks instead of `NaN` (audit **M-1**).
-- `digital` call-spread probability is centered on the target strike (not the
-  bracket midpoint), and no longer silently clamps an arbitraging smile to
-  `[0, 1]` — it returns `None` instead (audit **M-2**).
-- `d1_d2` rearranged to avoid forming `σ²` (overflow-safe) and to use fused
-  multiply-add for tighter rounding (audit **L-1**, **P-2**). Golden values are
-  unchanged within their `1e-12` tolerance.
-
-### Documented
-
-- Input preconditions (`F > 0, K > 0`, finite) on the pricing API, asserted in
-  debug builds within `d1_d2` (audit **M-4**).
-- `vol_surface` interpolation is not arbitrage-free; `nearest_bracket` now uses
-  a scale-relative strike-equality tolerance for crypto-magnitude strikes
-  (audit **M-3**, **L-3**).
-
-## [0.1.0] — 2026-05-28
+## [0.1.0] — 2026-06-01
 
 Initial public release. Extracted from the `prediction` repository's
-`src/pricing/` module with three pre-publish bug fixes applied during
-extraction (see below).
+`src/pricing/` module (the pure-math modules only), with numerical bug fixes
+and a hardened convergence contract applied before publication.
 
 ### Added
 
 - Closed-form Black-76 call / put / vega / intrinsic in [`pricing`].
-- Implied-volatility solver in [`iv_solver`] — Newton–Raphson with Brent's-method
-  fallback when vega is too small (deep OTM / near-expiry).
-  - `solve_iv` for a single price; `solve_iv_triple` for bid/mid/ask quotes.
-- First-order Greeks (delta, vega-per-1%, theta-per-day) in [`greeks`].
-- [`SolverConfig`] (and builder) for tuning iteration counts, tolerances,
-  IV bounds, vega floor, and the near-expiry cutoff.
+- First-order Greeks — delta, gamma, vega (per 1%), theta (per day), rho
+  (per 1%) — in [`greeks`].
+- Implied-volatility solver in [`iv_solver`] — Newton–Raphson with a
+  Brent's-method fallback when vega is too small (deep OTM / near-expiry).
+  `solve_iv` for a single price; `solve_iv_triple` for bid/mid/ask quotes.
+- `SolverStatus` enum on `SolverResult` — the precise reason behind a
+  (non-)convergence: `Converged`, `NearExpiryIntrinsic`, `NonPositivePrice`,
+  `BelowIntrinsic`, `NoBracketInRange`, `NotIdentifiable`, `MaxIterations`,
+  `InvalidInput`.
+- `BlackInputs` and `IvQuery` — typo-resistant, named-field wrappers over the
+  positional free functions, with `const` constructors.
+- [`SolverConfig`] (and builder) for tuning iteration counts, tolerances, IV
+  bounds, vega floor, and the near-expiry cutoff — including the
+  volatility-space `iv_tolerance`.
 - `vol-surface` feature: per-expiry [`VolSmile`] with linear-in-strike
   interpolation, flat extrapolation, and quality tiering.
 - `digital` feature (requires `vol-surface`): risk-neutral probability
   extraction via call-spread replication and `N(d2)` with skew adjustment.
 - `serde` feature: `Serialize` / `Deserialize` derives on the public API.
-- Six runnable examples, two Criterion benches, golden-value test vector,
-  and five proptest properties (parity, IV roundtrip, vega FD,
-  monotonicity, no-arbitrage bounds).
+- `#![forbid(unsafe_code)]`, `#[must_use]` on pure functions and builders, and
+  `const fn` builder setters.
+- Six runnable examples, two Criterion benches, golden-value vectors
+  (including third-party `math.erf` references), and proptest properties
+  (parity, IV roundtrip, vega/delta/theta/rho finite-difference, σ-monotonicity,
+  no-arbitrage bounds).
 
-### Fixed (pre-publish, from the upstream `prediction` repo's audit)
+### Convergence contract
+
+- Convergence is decided in **volatility space** (`|Δσ| < iv_tolerance` for
+  Newton-Raphson; bracket width in `σ` for Brent), not on an absolute price
+  residual. This removes false `converged = true` results in vega-weak or
+  large-forward regimes and is scale-free (audit **H-2**). The price residual
+  is still reported.
+- `solve_iv` returns `iv = f64::NAN` on **every** non-converged path and sets
+  `converged = false`, with a `SolverStatus` explaining why — including
+  `NearExpiryIntrinsic` for the near-expiry cutoff and `InvalidInput` for
+  non-finite inputs (audit **H-1**). No silently clamped boundary values
+  pretending to be solutions.
+
+### Fixed during extraction (from the upstream `prediction` audit)
 
 - **CRIT-A-01** — `iv_solver`: when Brent's bracket has no sign change, the
-  solver previously returned a clamped boundary with `converged = false`
-  but `iv = iv_min` or `iv = iv_max`. Consumers that ignored `converged`
-  silently used those boundary values as solutions. Fixed by returning
-  `iv = f64::NAN` together with `converged = false` so the failure cannot
-  be ignored. Regression: `iv_solver::tests::brent_no_bracket_returns_nan_iv`.
+  solver previously returned a clamped boundary (`iv = iv_min`/`iv_max`) with
+  `converged = false`; consumers ignoring `converged` silently used those
+  boundary values. Fixed by returning `iv = f64::NAN` so the failure cannot be
+  ignored. Regression: `iv_solver::tests::brent_no_bracket_returns_nan_iv`.
 - **HIGH-A-01** — `greeks`: the theta carry term carried the wrong sign
-  (`−r · C` instead of `+r · C` per Hull §17.8 eq 17.4 and Haug §1.1.5).
-  Theta on long options at non-zero rates was therefore biased. Fixed in
-  `compute_greeks`. Regression: `greeks::tests::theta_sign_correct_at_nonzero_rate`
-  (and `_put`).
+  (`−r · C` instead of `+r · C` per Hull §17.8 eq 17.4 and Haug §1.1.5),
+  biasing theta on long options at non-zero rates. Fixed in `compute_greeks`.
+  Regressions: `greeks::tests::theta_sign_correct_at_nonzero_rate(_put)`.
 - **HIGH-A-02** — `digital`: the call-spread risk-neutral probability was
   computed from the discounted call-price difference without rescaling by
-  `exp(rT)`, so the result silently collapsed toward `0.5 · exp(−rT)` at
-  the ATM strike (a ~5% bias at `r = 5%, T = 1y`). Fixed by dividing by
-  `df = exp(−rT)` in `call_spread_probability`. Regression:
+  `exp(rT)`, collapsing toward `0.5 · exp(−rT)` at the ATM strike (~5% bias at
+  `r = 5%, T = 1y`). Fixed by dividing by `df = exp(−rT)`. Regression:
   `digital::tests::call_spread_with_nonzero_rate`.
+- **negative-time-value gate** — the `solve_iv` lower-bound check compared the
+  market price against the *undiscounted* intrinsic `F − K`, rejecting feasible
+  ITM prices in `[df·intrinsic, intrinsic)`. Fixed to compare against the
+  *discounted* intrinsic. Regressions:
+  `iv_solver::tests::itm_{call,put}_between_discounted_and_undiscounted_intrinsic_accepted`.
+- **M-1** — `compute_greeks` now guards `sigma <= 0` (mirroring `pricing`),
+  returning the intrinsic delta and zero higher-order Greeks instead of `NaN`.
+- **M-2** — `digital` call-spread probability is centered on the target strike
+  (not the bracket midpoint) and no longer silently clamps an arbitraging smile
+  to `[0, 1]` — it returns `None`.
+- **L-1 / P-2** — `d1_d2` avoids forming `σ²` (overflow-safe) and uses fused
+  multiply-add for tighter rounding. Golden values are unchanged within their
+  `1e-12` tolerance.
+- `VolSmile::new` excludes non-finite strike/IV observations, so the
+  sorted-by-strike invariant always holds and interpolation never returns
+  `NaN` on a clean in-range query.
+- `digital::extract_probabilities` requires `t > 0`, returning `None` at/after
+  expiry instead of leaking a `NaN` probability.
 
-### Fixed (discovered during proptest hardening)
+### Documented
 
-- **`solve_iv` negative-time-value gate** — the gate at the top of
-  `solve_iv` compared the market price against the *undiscounted*
-  intrinsic `F − K`, but the true Black-76 no-arbitrage lower bound for an
-  ITM call is the *discounted* intrinsic `exp(−rT) · (F − K)` (and
-  symmetrically for puts). ITM prices in `[df·intrinsic, intrinsic)` were
-  legitimate Black-76 outputs but got rejected with
-  `iv = iv_min, converged = false`. Fixed by comparing against
-  discounted intrinsic. Regressions:
-  `iv_solver::tests::itm_call_between_discounted_and_undiscounted_intrinsic_accepted`
-  and `..._put_...` (plus full ITM moneyness coverage in the
-  `prop_iv_roundtrip_call` proptest).
+- Input preconditions (`F > 0, K > 0`, finite) on the pricing API, asserted in
+  debug builds within `d1_d2` (audit **M-4**).
+- `vol_surface` interpolation is **not** arbitrage-free; `nearest_bracket` uses
+  a scale-relative strike-equality tolerance for crypto-magnitude strikes
+  (audit **M-3**, **L-3**).
 
-### Decisions documented for v0.1
+### Decisions
 
 - Edition 2024, MSRV 1.85.
 - Single required dependency: `statrs` 0.18 (`default-features = false`).
 - `no_std` deferred to a future minor.
 - No async, no logging, no `chrono`.
 - All numerics are `f64`; no `Decimal`-typed APIs.
-- Public types that may grow new variants / fields in a future minor
-  version are marked `#[non_exhaustive]`.
+- Public types that may grow new variants / fields are marked
+  `#[non_exhaustive]`.
 
 [Unreleased]: https://github.com/Asbarn/black-76/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/Asbarn/black-76/releases/tag/v0.1.0

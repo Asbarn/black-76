@@ -142,12 +142,15 @@ cargo bench --bench iv_solver
 | Runtime deps | `statrs` only | NumPy/SciPy | QuantLib | varies |
 | Async / runtime | none | — | — | none |
 | Model focus | Black-76 (forwards/futures) | Black / BS / -76 | everything | mostly Black-Scholes |
-| IV solver | Newton + Brent, **typed `SolverStatus`** | Newton / `lets_be_rational` | various | basic / varies |
-| Non-convergence | `iv = NaN` + status enum | exceptions | exceptions | often silent / `unwrap` |
-| Greeks | delta, gamma, vega, theta, rho | full | full | partial |
+| IV solver | Newton + Brent, **typed `SolverStatus`** | Newton / `lets_be_rational` | various | varies |
+| Non-convergence | `iv = NaN` + status enum | exceptions | exceptions | varies by crate |
+| Greeks | delta, gamma, vega, theta, rho | full | full | crate-dependent |
 | Smile / digitals | optional (`vol-surface`, `digital`) | — | full surfaces | — |
 | `forbid(unsafe_code)` | yes | n/a | no (FFI) | varies |
 | MSRV / semver | 1.85, `#[non_exhaustive]` API | n/a | n/a | varies |
+
+<sub>Comparison reflects general positioning rather than pinned versions; verify
+the specifics against each project's current release.</sub>
 
 `black-76` is intentionally **small and sharp**: a synchronous, dependency-light
 forward-options pricer with a rigorous, typed convergence contract — not a full

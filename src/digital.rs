@@ -233,8 +233,10 @@ fn nd2_probability(
 /// function falls back to `N(d2)` with skew adjustment. Both estimators run
 /// whenever possible, and the absolute disagreement is reported.
 ///
-/// Returns `None` when IV cannot be interpolated at `target_strike` (so
-/// `N(d2)` is also unavailable).
+/// Requires `time_to_expiry > 0`. Returns `None` when the option has expired
+/// (`time_to_expiry <= 0`, where the risk-neutral probability degenerates to
+/// the intrinsic indicator and `N(d2)` is undefined at the money) or when IV
+/// cannot be interpolated at `target_strike` (so `N(d2)` is also unavailable).
 #[must_use]
 pub fn extract_probabilities(
     target_strike: f64,
@@ -244,6 +246,15 @@ pub fn extract_probabilities(
     rate: f64,
     max_epsilon: f64,
 ) -> Option<ProbabilityExtraction> {
+    // At/after expiry `d1_d2` forms `v = σ√T = 0`, so `N(d2)` is NaN at the
+    // money (0/0) and ±inf-driven 0/1 off the money — never a usable
+    // probability. Mirror the `t <= 0` intrinsic guards in `pricing`/`greeks`
+    // by reporting the result as unavailable rather than leaking NaN through
+    // `nd2.probability` / `method_disagreement`.
+    if time_to_expiry <= 0.0 {
+        return None;
+    }
+
     let call_spread = call_spread_probability(
         target_strike,
         smile,
@@ -493,5 +504,31 @@ mod tests {
             result.is_none(),
             "arbitraging smile must yield None, got {result:?}",
         );
+    }
+
+    /// At/after expiry the extractor returns `None` rather than leaking a NaN
+    /// `nd2.probability` / `method_disagreement` (the `t <= 0` guard mirrors
+    /// the intrinsic guards in `pricing`/`greeks`).
+    #[test]
+    fn extract_returns_none_at_or_after_expiry() {
+        let smile = flat_smile(0.20);
+        assert!(extract_probabilities(100.0, &smile, 100.0, 0.0, 0.0, 10.0).is_none());
+        assert!(extract_probabilities(100.0, &smile, 100.0, -1.0, 0.0, 10.0).is_none());
+    }
+
+    /// For finite `t > 0` inputs no field of the extraction is ever NaN.
+    #[test]
+    fn extract_has_no_nan_fields_for_valid_inputs() {
+        let smile = skewed_smile();
+        for &k in &[95.0_f64, 100.0, 105.0] {
+            let e = extract_probabilities(k, &smile, 100.0, 0.5, 0.03, 10.0).unwrap();
+            assert!(e.primary_probability.is_finite());
+            assert!(e.nd2.probability.is_finite());
+            assert!(e.method_disagreement.is_finite());
+            assert!(e.skew_adjustment.is_finite());
+            if let Some(cs) = &e.call_spread {
+                assert!(cs.probability.is_finite());
+            }
+        }
     }
 }

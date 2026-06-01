@@ -30,7 +30,9 @@ use crate::types::{InstrumentGreeks, SolverResult};
 /// ```
 ///
 /// New fields may be added in future minor versions; construct via
-/// [`new`](Self::new) or the public fields.
+/// [`new`](Self::new) (the type is `#[non_exhaustive]`, so struct-literal
+/// construction is unavailable to downstream crates). The public fields
+/// remain readable and serde-serializable.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]

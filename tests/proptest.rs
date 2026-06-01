@@ -88,11 +88,12 @@ proptest! {
 
     /// IV solved from a synthesised market price recovers the original σ.
     ///
-    /// The contract is *price tolerance*, not IV tolerance — the solver
-    /// converges when `|model_price − market_price| < price_tolerance`. In
-    /// vega-weak regions several IVs can map to nearly the same price, so
-    /// the IV residual can be larger than you'd expect even when the price
-    /// residual is below tolerance.
+    /// Convergence is decided in *volatility space* (audit H-2): the solver
+    /// stops when the Newton step in σ falls below `iv_tolerance`. The price
+    /// residual then scales with vega rather than being bounded by an absolute
+    /// price tolerance — in vega-weak regions several IVs map to nearly the
+    /// same price, so this test asserts a scale-relative price residual plus an
+    /// IV-recovery bound.
     #[test]
     fn prop_iv_roundtrip_call(
         f in forward(),
@@ -291,6 +292,27 @@ proptest! {
             (g.rho - fd_rho).abs() < 1e-4 * rho_scale,
             "rho analytic {} vs FD {} (F={f}, K={k}, T={t}, σ={s}, r={r})",
             g.rho, fd_rho,
+        );
+
+        // Delta via central difference of price in F (dimensionless ~[0,1]).
+        let hf = 1e-4 * f;
+        let fd_delta = (call_price(f + hf, k, t, s, r) - call_price(f - hf, k, t, s, r)) / (2.0 * hf);
+        prop_assert!(
+            (g.delta - fd_delta).abs() < 1e-4 * (g.delta.abs() + 1.0),
+            "delta analytic {} vs FD {} (F={f}, K={k}, T={t}, σ={s}, r={r})",
+            g.delta, fd_delta,
+        );
+
+        // Theta: g.theta is per-day = (-dC/dT)/365.25. Compare the per-year
+        // form against a central difference in T (scale-relative, like rho).
+        let dt = 1e-4;
+        let theta_year_fd = -(call_price(f, k, t + dt, s, r) - call_price(f, k, t - dt, s, r)) / (2.0 * dt);
+        let theta_year_analytic = g.theta * 365.25;
+        let theta_scale = (theta_year_analytic.abs() + f).max(1.0);
+        prop_assert!(
+            (theta_year_analytic - theta_year_fd).abs() < 1e-3 * theta_scale,
+            "theta/yr analytic {} vs FD {} (F={f}, K={k}, T={t}, σ={s}, r={r})",
+            theta_year_analytic, theta_year_fd,
         );
     }
 }

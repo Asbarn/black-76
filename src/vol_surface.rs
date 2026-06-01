@@ -230,6 +230,18 @@ impl VolSmile {
         let mut excluded = Vec::new();
 
         for p in raw_points {
+            // Reject non-finite observations first: a NaN strike slips the
+            // `iv <= 0.0` test below (NaN comparisons are false), survives the
+            // `partial_cmp(..).unwrap_or(Equal)` sort as "equal" (leaving the
+            // points vec unsorted), and then poisons `interpolate` /
+            // `nearest_bracket` — both of which assume a sorted slice — with
+            // NaN. A non-finite IV is equally unusable. Drop both so the
+            // sorted-ascending invariant always holds.
+            if !p.strike.is_finite() || !p.iv.is_finite() {
+                excluded.push((p.strike, "non-finite strike/IV".to_string()));
+                continue;
+            }
+
             if p.iv <= 0.0 {
                 excluded.push((p.strike, "non-positive IV".to_string()));
                 continue;
@@ -529,6 +541,46 @@ mod tests {
                 .all(|(_, reason)| reason == "non-positive IV")
         );
         assert_eq!(smile.quality, SmileQuality::Minimum);
+    }
+
+    /// Non-finite strike or IV is excluded by the constructor so the
+    /// sorted-ascending invariant holds and downstream interpolation never
+    /// returns NaN on a clean in-range query.
+    #[test]
+    fn construction_excludes_non_finite_strike_or_iv() {
+        let config = default_config();
+        let points = vec![
+            make_point(90.0, 0.30, 0.01),
+            make_point(f64::NAN, 0.28, 0.01), // NaN strike
+            make_point(100.0, 0.25, 0.01),
+            make_point(105.0, f64::NAN, 0.01),      // NaN IV
+            make_point(110.0, f64::INFINITY, 0.01), // non-finite IV
+            make_point(95.0, 0.27, 0.01),
+        ];
+        let smile = VolSmile::new(None, points, &config, 100.0);
+
+        // Three good points remain (90, 95, 100); the three non-finite ones
+        // are excluded and never enter `points`.
+        assert_eq!(smile.points.len(), 3);
+        assert_eq!(smile.excluded.len(), 3);
+        assert!(
+            smile
+                .excluded
+                .iter()
+                .all(|(_, reason)| reason == "non-finite strike/IV")
+        );
+        assert!(
+            smile
+                .points
+                .iter()
+                .all(|p| p.strike.is_finite() && p.iv.is_finite())
+        );
+
+        // Points are genuinely sorted, so an in-range query is finite.
+        let strikes: Vec<f64> = smile.points.iter().map(|p| p.strike).collect();
+        assert_eq!(strikes, vec![90.0, 95.0, 100.0]);
+        let iv = smile.interpolate(97.0).unwrap();
+        assert!(iv.is_finite());
     }
 
     fn make_good_smile() -> VolSmile {

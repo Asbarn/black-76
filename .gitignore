@@ -1,5 +1,7 @@
 /target
-Cargo.lock
+# Cargo.lock is committed (per current Cargo guidance, even for libraries) so
+# CI tests a reviewed, pinned dependency set. It does not affect downstream
+# consumers — they resolve their own lockfile.
 **/*.rs.bk
 *.pdb
 .DS_Store

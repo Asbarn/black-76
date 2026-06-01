@@ -57,6 +57,31 @@ jobs:
             cargo test --verbose --features "${{ matrix.features }}"
           fi
 
+  # Release profile compiles out debug_assertions, so the panic-free NaN/inf
+  # release-contract tests (cfg(not(debug_assertions))) only run here.
+  test-release:
+    name: test (release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --release --all-features
+
+  # Certify the 1e-12 golden bound and the FMA d1_d2 rewrite off x86_64-linux.
+  cross-platform:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --all-features
+
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
@@ -106,4 +131,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo publish --dry-run
+      # --all-features so the verify build compiles the same surface docs.rs
+      # publishes (default features alone would skip serde/vol-surface/digital).
+      - run: cargo publish --dry-run --all-features

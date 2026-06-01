@@ -45,8 +45,18 @@
 //! [`iv_solver::solve_iv`] returns a [`SolverResult`] whose `converged: bool`
 //! field MUST be checked before consuming `iv`. Whenever the solver does not
 //! converge, `iv` is [`f64::NAN`] and [`SolverStatus`] reports the precise
-//! reason (near-expiry, below intrinsic, non-positive price, no root in
-//! `[iv_min, iv_max]`, vega-floor non-identifiability, or max iterations).
+//! reason (non-finite input, near-expiry, below intrinsic, non-positive price,
+//! no root in `[iv_min, iv_max]`, vega-floor non-identifiability, or max
+//! iterations).
+//!
+//! # Equality and `NaN`
+//!
+//! The `f64`-bearing public types that derive [`PartialEq`] (e.g.
+//! [`BlackInputs`], [`SolverConfig`]) inherit IEEE-754 semantics, so a value
+//! holding a `NaN` is never equal to itself. This matters here because `NaN`
+//! is a first-class sentinel: the solver yields `iv = NaN` on every
+//! non-converged path. (Accordingly, [`SolverResult`] deliberately does *not*
+//! derive `PartialEq`.)
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]

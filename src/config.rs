@@ -50,7 +50,9 @@ pub struct SolverConfig {
     /// Maximum Brent's-method iterations.
     pub brent_max_iterations: u32,
     /// Near-expiry cutoff in hours. Below this, the solver bypasses NR/Brent
-    /// and returns an intrinsic-pricing result (`iv = 0.0, converged = true`).
+    /// and returns `iv = NaN`, `converged = false`,
+    /// `status = SolverStatus::NearExpiryIntrinsic` — price the option
+    /// intrinsically yourself rather than implying a volatility.
     pub near_expiry_cutoff_hours: f64,
 }
 

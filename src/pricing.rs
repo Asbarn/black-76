@@ -294,13 +294,60 @@ mod tests {
         assert!(vega(100.0, 100.0, 1.0, 0.0, 0.0).abs() < f64::EPSILON);
     }
 
-    /// Audit M-4: debug builds assert `F > 0 && K > 0` so misuse surfaces in
-    /// tests rather than silently producing NaN/inf.
+    /// Audit M-4: debug builds assert finite `F > 0 && K > 0` so misuse
+    /// surfaces in tests rather than silently producing NaN/inf. One case per
+    /// arm so a regression dropping any single predicate is caught.
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "K > 0")]
+    #[should_panic(expected = "requires finite F > 0 and K > 0")]
     fn d1_d2_debug_asserts_positive_strike() {
         let _ = d1_d2(100.0, 0.0, 1.0, 0.20);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "requires finite F > 0 and K > 0")]
+    fn d1_d2_debug_asserts_positive_forward() {
+        let _ = d1_d2(0.0, 100.0, 1.0, 0.20);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "requires finite F > 0 and K > 0")]
+    fn d1_d2_debug_asserts_finite_forward() {
+        let _ = d1_d2(f64::NAN, 100.0, 1.0, 0.20);
+    }
+
+    /// Release contract (audit M-4): with debug assertions compiled out, the
+    /// pricing path is panic-free and yields NaN/inf for negative or
+    /// non-finite `F`/`K` rather than erroring. Runs under `cargo test
+    /// --release`. (Exact zeros instead yield finite degenerate values — e.g.
+    /// `K = 0` gives `df·F` — so only negative/non-finite inputs are checked.)
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn release_non_finite_inputs_yield_non_finite_no_panic() {
+        for &f in &[-1.0_f64, f64::NAN, f64::INFINITY] {
+            assert!(
+                !call_price(f, 100.0, 1.0, 0.20, 0.0).is_finite(),
+                "call_price F={f}"
+            );
+            assert!(
+                !put_price(f, 100.0, 1.0, 0.20, 0.0).is_finite(),
+                "put_price F={f}"
+            );
+            assert!(!vega(f, 100.0, 1.0, 0.20, 0.0).is_finite(), "vega F={f}");
+        }
+        // Negative / non-finite strike.
+        for &k in &[-1.0_f64, f64::NAN, f64::INFINITY] {
+            assert!(
+                !call_price(100.0, k, 1.0, 0.20, 0.0).is_finite(),
+                "call_price K={k}"
+            );
+            assert!(
+                !put_price(100.0, k, 1.0, 0.20, 0.0).is_finite(),
+                "put_price K={k}"
+            );
+        }
     }
 
     /// Intrinsic value correctness.

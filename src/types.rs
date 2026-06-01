@@ -1,8 +1,15 @@
-//! Core types: `OptionType`, `SolverMethod`, `SolverResult`, `InstrumentGreeks`.
+//! Core types: `OptionType`, `SolverMethod`, `SolverStatus`, `SolverResult`,
+//! `InstrumentGreeks`.
 //!
 //! All numerical math uses `f64`. The crate exposes no `Decimal`-typed APIs.
 
 /// Option type: call or put.
+///
+/// A typed convenience/serde label for call-vs-put. The numeric API
+/// ([`price`](crate::price), [`compute_greeks`](crate::compute_greeks),
+/// [`solve_iv`](crate::solve_iv), …) selects via an `is_call: bool` argument;
+/// bridge to it with [`OptionType::is_call`]. `OptionType`-taking convenience
+/// overloads can be added in a future minor version without a breaking change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum OptionType {
@@ -78,6 +85,10 @@ pub enum SolverStatus {
     /// The solver exhausted its iteration budget without meeting the
     /// volatility-space tolerance. `iv` is [`f64::NAN`].
     MaxIterations,
+    /// An input (market price, `F`, `K`, `T`, or `r`) was non-finite, so no
+    /// solve was attempted. `iv` is [`f64::NAN`]. Validate untrusted or
+    /// exchange-sourced inputs before calling.
+    InvalidInput,
 }
 
 /// Result of an [`iv_solver::solve_iv`](crate::iv_solver::solve_iv) attempt.
